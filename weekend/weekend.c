@@ -105,7 +105,7 @@ void initSquareMatrix(VALTYPE **mat, int mag, int firstSeg) {
 void initMatrix(VALTYPE **mat, int columns, int rows, int firstSeg) {
 	int i;
     for (i=0; i<rows; i++) {
-        mat[i][0] = 1.0f;
+        mat[i][0] = i;
     }
     if (firstSeg) {
     	for (i=0; i<columns; i++) {
@@ -120,6 +120,18 @@ void printMatrix(VALTYPE** mat, int columns, int rows) {
         for (int j=0; j<columns; j++) {
             // i is row, j is column
             printf("%f ", mat[i][j]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+}
+
+void print1DMatrix(VALTYPE* matrix, int columns, int rows) {
+    printf("\n");
+    for (int i=0; i<rows; i++) {
+        for (int j=0; j<columns; j++) {
+            // i is row, j is column
+            printf("%f ", matrix[i*columns + j]);
         }
         printf("\n");
     }
@@ -299,28 +311,28 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	MPI_Request	send_start,send_end,recv_end,recv_start;
 	MPI_Status   status;
 	int          itask,recvtaskid;
-	int	        buffsize;
-	VALTYPE       *sendbuff,*recvbuff;
+	int	        rowbuffsize;
+	VALTYPE       *sendStartRowBuff, *sendEndRowBuff,*recvbuff;
 
-	buffsize = mag;
+	rowbuffsize = mag;
 
 	if (rank > 0) {
 		// row 0 was from someone else, and we do not edit it
 		printf("Sending our start row to previous rank:\n");
-		printRow(dest[1], buffsize);
-		sendbuff = dest[1];
+		printRow(dest[1], rowbuffsize);
+		sendStartRowBuff = dest[1];
 		// send start row to previous rank
-		MPI_Isend(sendbuff,buffsize,MPI_VALTYPE,
+		MPI_Isend(sendStartRowBuff,rowbuffsize,MPI_VALTYPE,
 						rank-1,0,MPI_COMM_WORLD,&send_start);
 	}
 	// send end row to next rank (instant)
 	if (rank < procs - 1) {
 		// row end-1 was from someone else, and we do not edit it
 		printf("Sending our end row to next rank:\n");
-		printRow(dest[myReadRows-2], buffsize);
-		sendbuff = dest[myReadRows-2];
+		printRow(dest[myReadRows-2], rowbuffsize);
+		sendEndRowBuff = dest[myReadRows-2];
 		// send end row to next rank
-		MPI_Isend(sendbuff,buffsize,MPI_VALTYPE,
+		MPI_Isend(sendEndRowBuff,rowbuffsize,MPI_VALTYPE,
 						rank+1,0,MPI_COMM_WORLD,&send_end);
 	}
 
@@ -329,16 +341,16 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		//printf("Current receiving row:\n");
 		//printRow(dest[myReadRows-1], buffsize);
 		recvbuff = dest[myReadRows-1];
-		MPI_Irecv(recvbuff,buffsize,MPI_VALTYPE,
-					   rank + 1,MPI_ANY_TAG,MPI_COMM_WORLD,&recv_end);
+		MPI_Irecv(recvbuff,rowbuffsize,MPI_VALTYPE,
+					   rank + 1,0,MPI_COMM_WORLD,&recv_end);
 	}
 	// grab start row from previous rank (blocking?)
 	if (rank > 0) {
 		//printf("Current receiving row:\n");
 		//printRow(dest[0], buffsize);
 		recvbuff = dest[0];
-		MPI_Irecv(recvbuff,buffsize,MPI_VALTYPE,
-					   rank - 1,MPI_ANY_TAG,MPI_COMM_WORLD,&recv_start);
+		MPI_Irecv(recvbuff,rowbuffsize,MPI_VALTYPE,
+					   rank - 1,0,MPI_COMM_WORLD,&recv_start);
 	}
 
 	if (rank < procs - 1) {
@@ -350,13 +362,66 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 
 	printMatrix(dest, myReadColumns, myReadRows);
 
-	sourceMatrix = (sourceMatrix+1)%matrixCount;
+	/*==============================================================*/
+	// Swap pointers
+	/*==============================================================*/
+
+	/*sourceMatrix = (sourceMatrix+1)%matrixCount;
 	destMatrix = (destMatrix+1)%matrixCount;
 
 	source = matrices[sourceMatrix];
-	dest = matrices[destMatrix];
+	dest = matrices[destMatrix];*/
 
+	/*==============================================================*/
+	// Give winning matrix to rank 0 to print
+	/*==============================================================*/
+	if (rank == 0) {
+		printf("Wrapping up..\n");
 
+		// print all my operable rows, plus top edge
+		printMatrix(dest, myReadColumns, myReadRows-1);
+
+		// recycle my own matrix, since big enough, and no longer needed
+		VALTYPE *recvMatrixBuff = dest[0];
+		int currentProcOwnedRows;
+		int matrixBuffSize;
+
+		int p;
+		for (p=1; p<procs; p++) {
+			int currentProcStartRow = rowStartForProc(p);
+			int currentProcEndRow = rowStartForProc(p+1)-1;
+			currentProcOwnedRows = currentProcEndRow - currentProcStartRow;
+
+			// final proc is also responsible for sending non-operable edge
+			if (p == procs - 1) {
+				currentProcOwnedRows++;
+			}
+
+			matrixBuffSize = currentProcOwnedRows*rowbuffsize;
+
+			printf("Expecting buffer of size: %d\n", matrixBuffSize);
+
+			MPI_Recv(recvMatrixBuff, matrixBuffSize, MPI_VALTYPE,
+				    p, 1, MPI_COMM_WORLD, &status);
+
+			print1DMatrix(recvMatrixBuff, myReadColumns, currentProcOwnedRows);
+		}
+	} else {
+		VALTYPE *sendMatrixBuff = dest[1];
+		int currentProcOwnedRows = myOperableRows;
+		// final proc must also send a non-operable edge
+		if (rank == procs - 1) {
+			currentProcOwnedRows++;
+		}
+
+		int matrixBuffSize = rowbuffsize*currentProcOwnedRows;
+
+		printf("Sending buffer of size: %d\n", matrixBuffSize);
+
+		// send my operable values to rank 0
+		MPI_Send(sendMatrixBuff,matrixBuffSize,MPI_VALTYPE,
+						0,1,MPI_COMM_WORLD);
+	}
 
 	/*==============================================================*/
 	// Free matrix memory
