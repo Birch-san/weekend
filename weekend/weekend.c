@@ -283,7 +283,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		}
 	}
 
-	printMatrix(source, myReadColumns, myReadRows);
+	printMatrix(dest, myReadColumns, myReadRows);
 
 	/*int          taskid, ntasks;
 	MPI_Status   status;
@@ -296,7 +296,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	double       inittime,totaltime,recvtime,recvtimes[1024];*/
 
 	int          ntasks;
-	MPI_Request	send_request,recv_request;
+	MPI_Request	send_start,send_end,recv_end,recv_start;
 	MPI_Status   status;
 	int          itask,recvtaskid;
 	int	        buffsize;
@@ -306,14 +306,23 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 
 	if (rank > 0) {
 		// row 0 was from someone else, and we do not edit it
-		//printf("Sending our start row to previous rank:\n");
-		//printRow(dest[1], buffsize);
+		printf("Sending our start row to previous rank:\n");
+		printRow(dest[1], buffsize);
 		sendbuff = dest[1];
 		// send start row to previous rank
 		MPI_Isend(sendbuff,buffsize,MPI_VALTYPE,
-						rank-1,0,MPI_COMM_WORLD,&send_request);
+						rank-1,0,MPI_COMM_WORLD,&send_start);
 	}
 	// send end row to next rank (instant)
+	if (rank < procs - 1) {
+		// row end-1 was from someone else, and we do not edit it
+		printf("Sending our end row to next rank:\n");
+		printRow(dest[myReadRows-2], buffsize);
+		sendbuff = dest[myReadRows-2];
+		// send end row to next rank
+		MPI_Isend(sendbuff,buffsize,MPI_VALTYPE,
+						rank+1,0,MPI_COMM_WORLD,&send_end);
+	}
 
 	// now grab end row from next rank (blocking?)
 	if (rank < procs - 1) {
@@ -321,13 +330,22 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		//printRow(dest[myReadRows-1], buffsize);
 		recvbuff = dest[myReadRows-1];
 		MPI_Irecv(recvbuff,buffsize,MPI_VALTYPE,
-					   rank + 1,MPI_ANY_TAG,MPI_COMM_WORLD,&recv_request);
+					   rank + 1,MPI_ANY_TAG,MPI_COMM_WORLD,&recv_end);
 	}
-	// and start row from previous rank (blocking?)
+	// grab start row from previous rank (blocking?)
+	if (rank > 0) {
+		//printf("Current receiving row:\n");
+		//printRow(dest[0], buffsize);
+		recvbuff = dest[0];
+		MPI_Irecv(recvbuff,buffsize,MPI_VALTYPE,
+					   rank - 1,MPI_ANY_TAG,MPI_COMM_WORLD,&recv_start);
+	}
 
-	//MPI_Wait(&send_request,&status);
 	if (rank < procs - 1) {
-		MPI_Wait(&recv_request, &status);
+		MPI_Wait(&recv_end, &status);
+	}
+	if (rank > 0) {
+		MPI_Wait(&recv_start, &status);
 	}
 
 	printMatrix(dest, myReadColumns, myReadRows);
