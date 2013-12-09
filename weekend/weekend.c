@@ -82,26 +82,6 @@ int** buildIntMatrix(int width, int height) {
     return rows;
 }
 
-MPI_Request** buildMpiRequestMatrix(int width, int height) {
-	MPI_Request* values = calloc(height * width, sizeof(MPI_Request));
-    if (!values) {
-    	fprintf(stderr, "matrix value calloc failed!\n");
-		return 0;
-    }
-
-    MPI_Request** rows = malloc(height * sizeof(MPI_Request*));
-    if (!rows) {
-		fprintf(stderr, "matrix row malloc failed!\n");
-		return 0;
-	}
-
-    int i;
-    for (i=0; i<height; i++) {
-        rows[i] = values + i*width;
-    }
-    return rows;
-}
-
 void freeMatrix(VALTYPE **mat, int height) {
 	free(mat[0]);
     free(mat);
@@ -262,11 +242,6 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	for (j=0; j<procs; j++) {
 		progressMatrix[0][j] = 1;
 	}
-	
-	MPI_Request **progressRequestMatrix;
-	if (rank == 0) {
-		progressRequestMatrix = buildMpiRequestMatrix(procs, matrixCount);
-	}
 
 	/*==============================================================*/
 	// Algorithm
@@ -327,7 +302,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	MPI_Request	send_start,send_end,
 				recv_end,recv_start,
 				send_relaxed;
-	int	        rowBuffSize, relaxedBuffSize;
+	int	        rowBuffSize;
 	VALTYPE       *sendStartRowBuff, *sendEndRowBuff,
 					*recvEndRowBuff, *recvStartRowBuff;
 
@@ -335,26 +310,6 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	 * the relevant row
 	 */
 	rowBuffSize = mag;
-
-	// tell everyone how relaxed you are
-	printf("Sending to everyone whether I relaxed this iteration.\n");
-	relaxedBuffSize = 1;
-
-	// tautology for clarity :)
-	if (rank != 0) {
-		MPI_Isend(&progressMatrix[destMatrix][rank], relaxedBuffSize, MPI_INT,
-							0,(int)RELAX_UPDATE ,MPI_COMM_WORLD,&send_relaxed);
-	} else {
-		for (i=0; i<matrixCount; i++) {
-			for (j=1; j<procs; j++) {
-				MPI_Irecv(&progressMatrix[i][j],relaxedBuffSize,
-						MPI_INT,
-							   j,(int)RELAX_UPDATE,MPI_COMM_WORLD,
-							   &progressRequestMatrix[i][j]);
-			}
-		}
-	}
-
 
 	// send start row to previous rank
 	if (rank > 0) {
