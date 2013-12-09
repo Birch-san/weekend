@@ -82,6 +82,26 @@ int** buildIntMatrix(int width, int height) {
     return rows;
 }
 
+MPI_Request** buildMpiRequestMatrix(int width, int height) {
+	MPI_Request* values = calloc(height * width, sizeof(MPI_Request));
+    if (!values) {
+    	fprintf(stderr, "matrix value calloc failed!\n");
+		return 0;
+    }
+
+    MPI_Request** rows = malloc(height * sizeof(MPI_Request*));
+    if (!rows) {
+		fprintf(stderr, "matrix row malloc failed!\n");
+		return 0;
+	}
+
+    int i;
+    for (i=0; i<height; i++) {
+        rows[i] = values + i*width;
+    }
+    return rows;
+}
+
 void freeMatrix(VALTYPE **mat, int height) {
 	free(mat[0]);
     free(mat);
@@ -105,7 +125,7 @@ void initSquareMatrix(VALTYPE **mat, int mag, int firstSeg) {
 void initMatrix(VALTYPE **mat, int columns, int rows, int firstSeg) {
 	int i;
     for (i=0; i<rows; i++) {
-        mat[i][0] = i;
+        mat[i][0] = 1.0f;
     }
     if (firstSeg) {
     	for (i=0; i<columns; i++) {
@@ -127,7 +147,6 @@ void printMatrix(VALTYPE** mat, int columns, int rows) {
 }
 
 void print1DMatrix(VALTYPE* matrix, int columns, int rows) {
-    printf("\n");
     for (int i=0; i<rows; i++) {
         for (int j=0; j<columns; j++) {
             // i is row, j is column
@@ -135,7 +154,6 @@ void print1DMatrix(VALTYPE* matrix, int columns, int rows) {
         }
         printf("\n");
     }
-    printf("\n");
 }
 
 void printRow(VALTYPE* row, int columns) {
@@ -146,24 +164,6 @@ void printRow(VALTYPE* row, int columns) {
 	}
     printf("\n\n");
 }
-
-typedef struct {
-	// array of matrices
-	VALTYPE*** matrices;
-	// count of matrices in array
-	int matrixCount;
-	// matrix magnitude
-	int mag;
-	VALTYPE precision;
-	// processor rank
-	int rank;
-	// number of processors
-	int procs;
-	// global variable saying whether threads are reaching final iteration
-	int *wrapUp;
-	// matrix of threads' progress on each iteration.
-	int **threadProgressMatrix;
-} identity;
 
 signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	/*==============================================================*/
@@ -226,6 +226,15 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 #endif
 	
 	/*==============================================================*/
+	// Declare message constants
+	/*==============================================================*/
+	typedef enum {
+		ROW_DATA = 0,
+		MATRIX_DATA,
+		RELAX_UPDATE
+	} MESSAGE_TYPE;
+
+	/*==============================================================*/
 	// Allocate matrix pool memory
 	/*==============================================================*/
 	// how many matrices will be in pool (iterations we can think ahead)
@@ -254,6 +263,11 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		progressMatrix[0][j] = 1;
 	}
 	
+	MPI_Request **progressRequestMatrix;
+	if (rank == 0) {
+		progressRequestMatrix = buildMpiRequestMatrix(procs, matrixCount);
+	}
+
 	/*==============================================================*/
 	// Algorithm
 	/*==============================================================*/
@@ -295,6 +309,8 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		}
 	}
 
+	progressMatrix[destMatrix][rank] = relaxed ? 2 : 1;
+
 	printMatrix(dest, myReadColumns, myReadRows);
 
 	/*int          taskid, ntasks;
@@ -307,50 +323,74 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	double       sendbuffsums[1024],recvbuffsums[1024];
 	double       inittime,totaltime,recvtime,recvtimes[1024];*/
 
-	int          ntasks;
-	MPI_Request	send_start,send_end,recv_end,recv_start;
 	MPI_Status   status;
-	int          itask,recvtaskid;
-	int	        rowbuffsize;
-	VALTYPE       *sendStartRowBuff, *sendEndRowBuff,*recvbuff;
+	MPI_Request	send_start,send_end,
+				recv_end,recv_start,
+				send_relaxed;
+	int	        rowBuffSize, relaxedBuffSize;
+	VALTYPE       *sendStartRowBuff, *sendEndRowBuff,
+					*recvEndRowBuff, *recvStartRowBuff;
 
-	rowbuffsize = mag;
+	/* btw we could totally send these messages as soon as we calculate
+	 * the relevant row
+	 */
+	rowBuffSize = mag;
 
+	// tell everyone how relaxed you are
+	printf("Sending to everyone whether I relaxed this iteration.\n");
+	relaxedBuffSize = 1;
+
+	// tautology for clarity :)
+	if (rank != 0) {
+		MPI_Isend(&progressMatrix[destMatrix][rank], relaxedBuffSize, MPI_INT,
+							0,(int)RELAX_UPDATE ,MPI_COMM_WORLD,&send_relaxed);
+	} else {
+		for (i=0; i<matrixCount; i++) {
+			for (j=1; j<procs; j++) {
+				MPI_Irecv(&progressMatrix[i][j],relaxedBuffSize,
+						MPI_INT,
+							   j,(int)RELAX_UPDATE,MPI_COMM_WORLD,
+							   &progressRequestMatrix[i][j]);
+			}
+		}
+	}
+
+
+	// send start row to previous rank
 	if (rank > 0) {
 		// row 0 was from someone else, and we do not edit it
 		printf("Sending our start row to previous rank:\n");
-		printRow(dest[1], rowbuffsize);
+		printRow(dest[1], rowBuffSize);
 		sendStartRowBuff = dest[1];
-		// send start row to previous rank
-		MPI_Isend(sendStartRowBuff,rowbuffsize,MPI_VALTYPE,
-						rank-1,0,MPI_COMM_WORLD,&send_start);
+		MPI_Isend(sendStartRowBuff,rowBuffSize,MPI_VALTYPE,
+						rank-1,(int)ROW_DATA,MPI_COMM_WORLD,&send_start);
 	}
 	// send end row to next rank (instant)
 	if (rank < procs - 1) {
 		// row end-1 was from someone else, and we do not edit it
 		printf("Sending our end row to next rank:\n");
-		printRow(dest[myReadRows-2], rowbuffsize);
+		printRow(dest[myReadRows-2], rowBuffSize);
 		sendEndRowBuff = dest[myReadRows-2];
 		// send end row to next rank
-		MPI_Isend(sendEndRowBuff,rowbuffsize,MPI_VALTYPE,
-						rank+1,0,MPI_COMM_WORLD,&send_end);
+		MPI_Isend(sendEndRowBuff,rowBuffSize,MPI_VALTYPE,
+						rank+1,(int)ROW_DATA,MPI_COMM_WORLD,&send_end);
 	}
 
 	// now grab end row from next rank (blocking?)
 	if (rank < procs - 1) {
 		//printf("Current receiving row:\n");
 		//printRow(dest[myReadRows-1], buffsize);
-		recvbuff = dest[myReadRows-1];
-		MPI_Irecv(recvbuff,rowbuffsize,MPI_VALTYPE,
-					   rank + 1,0,MPI_COMM_WORLD,&recv_end);
+		recvEndRowBuff = dest[myReadRows-1];
+		MPI_Irecv(recvEndRowBuff,rowBuffSize,MPI_VALTYPE,
+					   rank + 1,(int)ROW_DATA,MPI_COMM_WORLD,&recv_end);
 	}
 	// grab start row from previous rank (blocking?)
 	if (rank > 0) {
 		//printf("Current receiving row:\n");
 		//printRow(dest[0], buffsize);
-		recvbuff = dest[0];
-		MPI_Irecv(recvbuff,rowbuffsize,MPI_VALTYPE,
-					   rank - 1,0,MPI_COMM_WORLD,&recv_start);
+		recvStartRowBuff = dest[0];
+		MPI_Irecv(recvStartRowBuff,rowBuffSize,MPI_VALTYPE,
+					   rank - 1,(int)ROW_DATA,MPI_COMM_WORLD,&recv_start);
 	}
 
 	if (rank < procs - 1) {
@@ -379,7 +419,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		printf("Wrapping up..\n");
 
 		// print all my operable rows, plus top edge
-		printMatrix(dest, myReadColumns, myReadRows-1);
+		print1DMatrix(dest[0], myReadColumns, myReadRows-1);
 
 		// recycle my own matrix, since big enough, and no longer needed
 		VALTYPE *recvMatrixBuff = dest[0];
@@ -397,12 +437,12 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 				currentProcOwnedRows++;
 			}
 
-			matrixBuffSize = currentProcOwnedRows*rowbuffsize;
+			matrixBuffSize = currentProcOwnedRows*rowBuffSize;
 
-			printf("Expecting buffer of size: %d\n", matrixBuffSize);
+			//printf("Expecting buffer of size: %d\n", matrixBuffSize);
 
 			MPI_Recv(recvMatrixBuff, matrixBuffSize, MPI_VALTYPE,
-				    p, 1, MPI_COMM_WORLD, &status);
+				    p, (int)MATRIX_DATA, MPI_COMM_WORLD, &status);
 
 			print1DMatrix(recvMatrixBuff, myReadColumns, currentProcOwnedRows);
 		}
@@ -414,13 +454,13 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 			currentProcOwnedRows++;
 		}
 
-		int matrixBuffSize = rowbuffsize*currentProcOwnedRows;
+		int matrixBuffSize = rowBuffSize*currentProcOwnedRows;
 
 		printf("Sending buffer of size: %d\n", matrixBuffSize);
 
 		// send my operable values to rank 0
 		MPI_Send(sendMatrixBuff,matrixBuffSize,MPI_VALTYPE,
-						0,1,MPI_COMM_WORLD);
+						0,(int)MATRIX_DATA,MPI_COMM_WORLD);
 	}
 
 	/*==============================================================*/
