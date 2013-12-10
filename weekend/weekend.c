@@ -265,10 +265,10 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		int	        rowBuffSize;
 		VALTYPE surroundingValues;
 
-		int min;
-				int max;
+		int min[4];
+		int max[4];
 
-	for (n=0; n<1; n++) {
+	for (n=0; n<matrixCount; n++) {
 		sourceMatrix = n % matrixCount;
 		destMatrix = (n + 1) % matrixCount;
 
@@ -409,29 +409,43 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		 * You can only cycle after if I have read at least my value.
 		 */
 
-		printf("Gather!\n");
-		int nextIterationCheck = (latestCheckedIteration + 1) % matrixCount;
-		printf("progressArray is: %d\n", progressArray[nextIterationCheck]);
+		if (n % matrixCount == matrixCount-1) {
+			printf("Gather!\n");
+			int nextIterationCheck = (latestCheckedIteration + 1) % matrixCount;
+			printf("progressArray is: %d\n", progressArray[nextIterationCheck]);
 
-		//int *relaxResult;
-		int relaxResults[procs];
-		//int *relaxResults = calloc(procs, sizeof(int));
-	//	if (rank == 0) {
-			//if (relaxed) {
+			//int *relaxResult;
+			int relaxResults[procs];
+			//int *relaxResults = calloc(procs, sizeof(int));
+		//	if (rank == 0) {
+				//if (relaxed) {
 
-		// looks like my mistake was expecting 'procs' receive count
-		// receive count is actually 'per proc'
-		MPI_Allgather(&progressArray[nextIterationCheck], 1, MPI_INT,
-					   relaxResults, 1, MPI_INT, MPI_COMM_WORLD);
+			// looks like my mistake was expecting 'procs' receive count
+			// receive count is actually 'per proc'
+			MPI_Allgather(&progressArray[nextIterationCheck], 1, MPI_INT,
+						   relaxResults, 1, MPI_INT, MPI_COMM_WORLD);
 
-		// looks like both results go into element 0 of relaxResults?
+			// looks like both results go into element 0 of relaxResults?
 
+			printf("Relax 0 is: %d\n", relaxResults[0]);
+			printf("Relax 1 is: %d\n", relaxResults[1]);
 
-		MPI_Reduce_local(relaxResults, &min, procs, MPI_INT, MPI_MIN);
-		MPI_Reduce_local(relaxResults, &max, procs, MPI_INT, MPI_MAX);
-		printf("Min was: %d \tMax was: %d\n", min, max);
+			int test[4] = {100,5,3,200};
+			min[0] = 3;
+			min[1] = 200;
+			min[2] = 6;
+			min[3] = 9;
+			max[0] = 3;
+			max[1] = 200;
+			max[2] = 6;
+			max[3] = 9;
 
-		printf("progressArray is: %d\n", progressArray[nextIterationCheck]);
+			MPI_Reduce_local(test, &min, 4, MPI_INT, MPI_MIN);
+			MPI_Reduce_local(test, &max, 4, MPI_INT, MPI_MAX);
+			printf("Min was: %d \tMax was: %d\n", min[3], max[3]);
+
+			printf("progressArray is: %d\n", progressArray[nextIterationCheck]);
+		}
 			//}
 	//	}
 
@@ -453,6 +467,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 
 		source = matrices[sourceMatrix];
 		dest = matrices[destMatrix];*/
+	}
 
 		/*==============================================================*/
 		// Give winning matrix to rank 0 to print
@@ -504,16 +519,16 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 			MPI_Send(sendMatrixBuff,matrixBuffSize,MPI_VALTYPE,
 							0,(int)MATRIX_DATA,MPI_COMM_WORLD);
 		}
-	}
+
 
 	/*==============================================================*/
 	// Free matrix memory
 	/*==============================================================*/
 	
 	// free matrix pool
-	/*for (i = 0; i<matrixCount; i++) {
+	for (i = 0; i<matrixCount; i++) {
 		freeMatrix(matrices[i], mag);
-	}*/
+	}
 
 	/*==============================================================*/
 	// Return
