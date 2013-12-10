@@ -255,8 +255,20 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	/*==============================================================*/
 	// Algorithm
 	/*==============================================================*/
+		MPI_Status   status;
+		MPI_Request	send_start = NULL,send_end = NULL,
+					recv_end,recv_start;
+		VALTYPE       *sendStartRowBuff, *sendEndRowBuff,
+						*recvEndRowBuff, *recvStartRowBuff,
+						*recvMatrixBuff, *sendMatrixBuff;
 
-	//for (n=0; n<1; n++) {
+		int	        rowBuffSize;
+		VALTYPE surroundingValues;
+
+		int min;
+				int max;
+
+	for (n=0; n<1; n++) {
 		sourceMatrix = n % matrixCount;
 		destMatrix = (n + 1) % matrixCount;
 
@@ -265,7 +277,6 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		dest = matrices[destMatrix];
 
 		relaxed = 1;
-		VALTYPE surroundingValues;
 		for (i=1; i<=myOperableRows; i++) {
 			for (j=firstOperableColumn; j<= lastOperableColumn; j++) {
 				VALTYPE previousValue = source[i][j];
@@ -297,12 +308,6 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		// Send rows to neighbours
 		/*==============================================================*/
 
-		MPI_Status   status;
-		MPI_Request	send_start = NULL,send_end = NULL,
-					recv_end,recv_start;
-		int	        rowBuffSize;
-		VALTYPE       *sendStartRowBuff, *sendEndRowBuff,
-						*recvEndRowBuff, *recvStartRowBuff;
 
 		/* btw we could totally send these messages as soon as we calculate
 		 * the relevant row
@@ -413,8 +418,6 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		//int *relaxResults = calloc(procs, sizeof(int));
 	//	if (rank == 0) {
 			//if (relaxed) {
-		/*MPI_Reduce(progressMatrix[nextIterationCheck][rank], relaxResult, 1,
-				MPI_INT, MPI_MIN, rank, MPI_COMM_WORLD);*/
 
 		// looks like my mistake was expecting 'procs' receive count
 		// receive count is actually 'per proc'
@@ -423,8 +426,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 
 		// looks like both results go into element 0 of relaxResults?
 
-		int min;
-		int max;
+
 		MPI_Reduce_local(relaxResults, &min, procs, MPI_INT, MPI_MIN);
 		MPI_Reduce_local(relaxResults, &max, procs, MPI_INT, MPI_MAX);
 		printf("Min was: %d \tMax was: %d\n", min, max);
@@ -462,7 +464,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 			print1DMatrix(dest[0], myReadColumns, myReadRows-1);
 
 			// recycle my own matrix, since big enough, and no longer needed
-			VALTYPE *recvMatrixBuff = dest[0];
+			recvMatrixBuff = dest[0];
 			int currentProcOwnedRows;
 			int matrixBuffSize;
 
@@ -487,7 +489,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 				print1DMatrix(recvMatrixBuff, myReadColumns, currentProcOwnedRows);
 			}
 		} else {
-			VALTYPE *sendMatrixBuff = dest[1];
+			sendMatrixBuff = dest[1];
 			int currentProcOwnedRows = myOperableRows;
 			// final proc must also send a non-operable edge
 			if (rank == procs - 1) {
@@ -502,22 +504,23 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 			MPI_Send(sendMatrixBuff,matrixBuffSize,MPI_VALTYPE,
 							0,(int)MATRIX_DATA,MPI_COMM_WORLD);
 		}
-	//}
+	}
 
 	/*==============================================================*/
 	// Free matrix memory
 	/*==============================================================*/
 	
 	// free matrix pool
-	for (i = 0; i<matrixCount; i++) {
+	/*for (i = 0; i<matrixCount; i++) {
 		freeMatrix(matrices[i], mag);
-	}
+	}*/
 
 	/*==============================================================*/
 	// Return
 	/*==============================================================*/
 	
 	//printf("(MAXITERATIONS reached) proc %d is returning.\n", id->rank);
+	printf("(EOF1 reached) proc %d is returning.\n", rank);
 	printf("(EOF reached) proc %d is returning.\n", rank);
 	return -1;
 }
