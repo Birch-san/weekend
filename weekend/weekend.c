@@ -218,7 +218,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	// Allocate matrix pool memory
 	/*==============================================================*/
 	// how many matrices will be in pool (iterations we can think ahead)
-	const int matrixCount = max(2, procs+1);
+	const int matrixCount = max(2, procs);
 
 	VALTYPE **matrices[matrixCount];
 
@@ -236,8 +236,6 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 
 	// initialise progress tracking array
 	int progressArray[matrixCount];
-	// 0th iteration considered complete, unrelaxed
-	progressArray[0] = 1;
 
 	/*==============================================================*/
 	// Algorithm variable declarations
@@ -299,7 +297,8 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 			}
 		}
 
-		progressArray[destMatrix] = relaxed ? 2 : 1;
+		progressArray[n % matrixCount] = relaxed ? 2 : 1;
+		printf("For iteration %d (%d modx), relaxed: %d\n", n, n % matrixCount, progressArray[n % matrixCount]);
 
 		printMatrix(dest, myReadColumns, myReadRows);
 
@@ -524,7 +523,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 				print1DMatrix(recvMatrixBuff, myReadColumns, currentProcOwnedRows);
 			}
 		} else {
-			printf("[RANK0] Wrapping up..\n");
+			printf("Wrapping up..\n");
 			printf("First winning iteration was: %d\n", winningIterationAbs);
 			printf("This is matrix: %d\n", winningIterationMod);
 
