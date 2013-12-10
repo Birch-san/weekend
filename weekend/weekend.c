@@ -234,23 +234,23 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		initMatrix(matrices[i], myReadColumns, myReadRows, rank == 0);
 	}
 
-	// initialise progress tracking matrix
-	int **progressMatrix;
-	progressMatrix = buildIntMatrix(procs, matrixCount);
-	int j;
-	// 1 out the first row, since the built matrix is a complete iteration.
-	for (j=0; j<procs; j++) {
-		progressMatrix[0][j] = 1;
-	}
+	// initialise progress tracking array
+	int progressArray[matrixCount];
+	// first iteration marked complete, unrelaxed
+	progressArray[0] = 1;
 
 	/*==============================================================*/
 	// Algorithm
 	/*==============================================================*/
 
-	int sourceMatrix = 0;
-	int destMatrix = sourceMatrix + 1;
+	signed int latestCheckedIteration = -1;
+	int currentIteration = 0;
+
+	int sourceMatrix = currentIteration % matrixCount;
+	int destMatrix = (currentIteration + 1) % matrixCount;
 	VALTYPE** source;
 	VALTYPE** dest;
+
 
 	int n;
 	n = 0;
@@ -261,6 +261,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 
 	int relaxed = 1;
 	VALTYPE surroundingValues;
+	int j;
 	for (i=1; i<=myOperableRows; i++) {
 		for (j=firstOperableColumn; j<= lastOperableColumn; j++) {
 			VALTYPE previousValue = source[i][j];
@@ -284,24 +285,17 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		}
 	}
 
-	progressMatrix[destMatrix][rank] = relaxed ? 2 : 1;
+	progressArray[destMatrix] = relaxed ? 2 : 1;
 
 	printMatrix(dest, myReadColumns, myReadRows);
 
-	/*int          taskid, ntasks;
-	MPI_Status   status;
-	MPI_Request	send_request,recv_request;
-	int          ierr,i,j,itask,recvtaskid;
-	int	        buffsize;
-	double       *sendbuff,*recvbuff;
-	double       sendbuffsum,recvbuffsum;
-	double       sendbuffsums[1024],recvbuffsums[1024];
-	double       inittime,totaltime,recvtime,recvtimes[1024];*/
+	/*==============================================================*/
+	// Send rows to neighbours
+	/*==============================================================*/
 
 	MPI_Status   status;
 	MPI_Request	send_start,send_end,
-				recv_end,recv_start,
-				send_relaxed;
+				recv_end,recv_start;
 	int	        rowBuffSize;
 	VALTYPE       *sendStartRowBuff, *sendEndRowBuff,
 					*recvEndRowBuff, *recvStartRowBuff;
@@ -356,6 +350,86 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	}
 
 	printMatrix(dest, myReadColumns, myReadRows);
+
+	/*==============================================================*/
+	// Read everyone's relaxed
+	/*==============================================================*/
+
+	/* the person who does this should be the person who first hits
+	 * matrixCount above latestCheckedIteration
+	 * although.. with reduce, everyone needs to do at same time.
+	 */
+
+	/* This is basically a barrier every iteration.. actually nobody will ever
+	 * be 0, because they all necessarily got through their code if they are
+	 * here.
+	 */
+
+	/* How about doing it every matrixCount iterations (so we reduce as much
+	 * work as possible)?
+	 * Although, pretty much guarantees you will have 0s
+	 * Maybe do matrixCount of these every matrixCount iterations?
+	 * Although only one person can be matrixCount ahead, so everyone else is 0
+	 */
+
+	/* Every matrixCount iterations, you declare the highest relax you have.
+	 * If everyone has a 'relaxed' somewhere, we investigate. Uh
+	 */
+
+	/* Doesn't matter if everyone has finished an iteration if we can show that
+	 * that iteration is not relaxed.
+	 * Every matrixCount iterations, ask what the highest value for each
+	 * iteration was. If there is a 1 ('finished, not relaxed'), increment.
+	 * If max is 2, then check that min is also 2.
+	 */
+
+	/* If I'm relaxed, do I need to ask, or just tell I've signed off?*/
+	/* Since this is also being used to check that everyone's done
+	 * with the iteration.. but then again, only I need to be done with it.
+	 */
+	/* The reason the limit exists is so that you necessarily still have the
+	 * data for that iteration in your buffer. Guess it doesn't matter if you
+	 * overwrite an iteration that can't win. But you won't overwrite anyway?
+	 * You can only cycle after if I have read at least my value.
+	 */
+
+	printf("Gather!\n");
+	int nextIterationCheck = (latestCheckedIteration + 1) % matrixCount;
+	printf("progressArray is: %d\n", progressArray[nextIterationCheck]);
+
+	//int *relaxResult;
+	int relaxResults[procs];
+	//int *relaxResults = calloc(procs, sizeof(int));
+//	if (rank == 0) {
+		//if (relaxed) {
+	/*MPI_Reduce(progressMatrix[nextIterationCheck][rank], relaxResult, 1,
+			MPI_INT, MPI_MIN, rank, MPI_COMM_WORLD);*/
+
+	// looks like my mistake was expecting 'procs' receive count
+	// receive count is actually 'per proc'
+	MPI_Allgather(&progressArray[nextIterationCheck], 1, MPI_INT,
+	               relaxResults, 1, MPI_INT, MPI_COMM_WORLD);
+
+	// looks like both results go into element 0 of relaxResults?
+
+	int min;
+	int max;
+	MPI_Reduce_local(relaxResults, &min, procs, MPI_INT, MPI_MIN);
+	MPI_Reduce_local(relaxResults, &max, procs, MPI_INT, MPI_MAX);
+	printf("Min was: %d \tMax was: %d\n", min, max);
+
+	printf("progressArray is: %d\n", progressArray[nextIterationCheck]);
+		//}
+//	}
+
+	/*
+	if (relaxResult == 0) {
+
+	} else if (relaxResult == 1) {
+
+	} else {
+
+	}*/
 
 	/*==============================================================*/
 	// Swap pointers
@@ -426,8 +500,6 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	for (i = 0; i<matrixCount; i++) {
 		freeMatrix(matrices[i], mag);
 	}
-	// free progress matrix
-	freeIntMatrix(progressMatrix, matrixCount);
 
 	/*==============================================================*/
 	// Return
