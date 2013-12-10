@@ -240,257 +240,269 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	progressArray[0] = 1;
 
 	/*==============================================================*/
-	// Algorithm
+	// Algorithm variable declarations
 	/*==============================================================*/
-
 	signed int latestCheckedIteration = -1;
-	int currentIteration = 0;
+	// iteration number
+	int n = 0;
 
-	int sourceMatrix = currentIteration % matrixCount;
-	int destMatrix = (currentIteration + 1) % matrixCount;
+	int sourceMatrix, destMatrix;
 	VALTYPE** source;
 	VALTYPE** dest;
 
-
-	int n;
-	n = 0;
-
-	printf("thread %d beginning iteration %d.\n", rank, n);
-	source = matrices[sourceMatrix];
-	dest = matrices[destMatrix];
-
-	int relaxed = 1;
-	VALTYPE surroundingValues;
+	int relaxed;
 	int j;
-	for (i=1; i<=myOperableRows; i++) {
-		for (j=firstOperableColumn; j<= lastOperableColumn; j++) {
-			VALTYPE previousValue = source[i][j];
-			surroundingValues = 0;
-			surroundingValues += source[i-1][j];
-			surroundingValues += source[i+1][j];
-			surroundingValues += source[i][j-1];
-			surroundingValues += source[i][j+1];
+	/*==============================================================*/
+	// Algorithm
+	/*==============================================================*/
 
-			VALTYPE newValue = surroundingValues/4;
-			dest[i][j] = newValue;
+	//for (n=0; n<1; n++) {
+		sourceMatrix = n % matrixCount;
+		destMatrix = (n + 1) % matrixCount;
 
-			// absolute difference between new and previous value
-			VALTYPE delta = ABS(newValue - previousValue);
+		printf("thread %d beginning iteration %d.\n", rank, n);
+		source = matrices[sourceMatrix];
+		dest = matrices[destMatrix];
 
-			// If all values so far have been suitably relaxed,
-			if (relaxed) {
-				// check that this one, too is relaxed.
-				relaxed = delta < precision;
+		relaxed = 1;
+		VALTYPE surroundingValues;
+		for (i=1; i<=myOperableRows; i++) {
+			for (j=firstOperableColumn; j<= lastOperableColumn; j++) {
+				VALTYPE previousValue = source[i][j];
+				surroundingValues = 0;
+				surroundingValues += source[i-1][j];
+				surroundingValues += source[i+1][j];
+				surroundingValues += source[i][j-1];
+				surroundingValues += source[i][j+1];
+
+				VALTYPE newValue = surroundingValues/4;
+				dest[i][j] = newValue;
+
+				// absolute difference between new and previous value
+				VALTYPE delta = ABS(newValue - previousValue);
+
+				// If all values so far have been suitably relaxed,
+				if (relaxed) {
+					// check that this one, too is relaxed.
+					relaxed = delta < precision;
+				}
 			}
 		}
-	}
 
-	progressArray[destMatrix] = relaxed ? 2 : 1;
+		progressArray[destMatrix] = relaxed ? 2 : 1;
 
-	printMatrix(dest, myReadColumns, myReadRows);
+		printMatrix(dest, myReadColumns, myReadRows);
 
-	/*==============================================================*/
-	// Send rows to neighbours
-	/*==============================================================*/
+		/*==============================================================*/
+		// Send rows to neighbours
+		/*==============================================================*/
 
-	MPI_Status   status;
-	MPI_Request	send_start,send_end,
-				recv_end,recv_start;
-	int	        rowBuffSize;
-	VALTYPE       *sendStartRowBuff, *sendEndRowBuff,
-					*recvEndRowBuff, *recvStartRowBuff;
+		MPI_Status   status;
+		MPI_Request	send_start = NULL,send_end = NULL,
+					recv_end,recv_start;
+		int	        rowBuffSize;
+		VALTYPE       *sendStartRowBuff, *sendEndRowBuff,
+						*recvEndRowBuff, *recvStartRowBuff;
 
-	/* btw we could totally send these messages as soon as we calculate
-	 * the relevant row
-	 */
-	rowBuffSize = mag;
+		/* btw we could totally send these messages as soon as we calculate
+		 * the relevant row
+		 */
+		rowBuffSize = mag;
 
-	// send start row to previous rank
-	if (rank > 0) {
-		// row 0 was from someone else, and we do not edit it
-		printf("Sending our start row to previous rank:\n");
-		printRow(dest[1], rowBuffSize);
-		sendStartRowBuff = dest[1];
-		MPI_Isend(sendStartRowBuff,rowBuffSize,MPI_VALTYPE,
-						rank-1,(int)ROW_DATA,MPI_COMM_WORLD,&send_start);
-	}
-	// send end row to next rank (instant)
-	if (rank < procs - 1) {
-		// row end-1 was from someone else, and we do not edit it
-		printf("Sending our end row to next rank:\n");
-		printRow(dest[myReadRows-2], rowBuffSize);
-		sendEndRowBuff = dest[myReadRows-2];
-		// send end row to next rank
-		MPI_Isend(sendEndRowBuff,rowBuffSize,MPI_VALTYPE,
-						rank+1,(int)ROW_DATA,MPI_COMM_WORLD,&send_end);
-	}
+		// send start row to previous rank
+		if (rank > 0) {
+			// row 0 was from someone else, and we do not edit it
+			printf("Sending our start row to previous rank:\n");
+			printRow(dest[1], rowBuffSize);
+			sendStartRowBuff = dest[1];
+			// make sure we finished sending any existing request
+			if (send_start) {
+				MPI_Wait(&send_start, &status);
+			}
+			MPI_Isend(sendStartRowBuff,rowBuffSize,MPI_VALTYPE,
+							rank-1,(int)ROW_DATA,MPI_COMM_WORLD,&send_start);
+		}
+		// send end row to next rank (instant)
+		if (rank < procs - 1) {
+			// row end-1 was from someone else, and we do not edit it
+			printf("Sending our end row to next rank:\n");
+			printRow(dest[myReadRows-2], rowBuffSize);
+			sendEndRowBuff = dest[myReadRows-2];
+			// make sure we finished sending any existing request.
+			if (send_end) {
+				MPI_Wait(&send_end, &status);
+			}
+			MPI_Isend(sendEndRowBuff,rowBuffSize,MPI_VALTYPE,
+							rank+1,(int)ROW_DATA,MPI_COMM_WORLD,&send_end);
+		}
 
-	// now grab end row from next rank (blocking?)
-	if (rank < procs - 1) {
-		//printf("Current receiving row:\n");
-		//printRow(dest[myReadRows-1], buffsize);
-		recvEndRowBuff = dest[myReadRows-1];
-		MPI_Irecv(recvEndRowBuff,rowBuffSize,MPI_VALTYPE,
-					   rank + 1,(int)ROW_DATA,MPI_COMM_WORLD,&recv_end);
-	}
-	// grab start row from previous rank (blocking?)
-	if (rank > 0) {
-		//printf("Current receiving row:\n");
-		//printRow(dest[0], buffsize);
-		recvStartRowBuff = dest[0];
-		MPI_Irecv(recvStartRowBuff,rowBuffSize,MPI_VALTYPE,
-					   rank - 1,(int)ROW_DATA,MPI_COMM_WORLD,&recv_start);
-	}
+		// now grab end row from next rank (blocking?)
+		if (rank < procs - 1) {
+			//printf("Current receiving row:\n");
+			//printRow(dest[myReadRows-1], buffsize);
+			recvEndRowBuff = dest[myReadRows-1];
+			MPI_Irecv(recvEndRowBuff,rowBuffSize,MPI_VALTYPE,
+						   rank + 1,(int)ROW_DATA,MPI_COMM_WORLD,&recv_end);
+		}
+		// grab start row from previous rank (blocking?)
+		if (rank > 0) {
+			//printf("Current receiving row:\n");
+			//printRow(dest[0], buffsize);
+			recvStartRowBuff = dest[0];
+			MPI_Irecv(recvStartRowBuff,rowBuffSize,MPI_VALTYPE,
+						   rank - 1,(int)ROW_DATA,MPI_COMM_WORLD,&recv_start);
+		}
 
-	if (rank < procs - 1) {
-		MPI_Wait(&recv_end, &status);
-	}
-	if (rank > 0) {
-		MPI_Wait(&recv_start, &status);
-	}
+		if (rank < procs - 1) {
+			MPI_Wait(&recv_end, &status);
+		}
+		if (rank > 0) {
+			MPI_Wait(&recv_start, &status);
+		}
 
-	printMatrix(dest, myReadColumns, myReadRows);
+		printMatrix(dest, myReadColumns, myReadRows);
 
-	/*==============================================================*/
-	// Read everyone's relaxed
-	/*==============================================================*/
+		/*==============================================================*/
+		// Read everyone's relaxed
+		/*==============================================================*/
 
-	/* the person who does this should be the person who first hits
-	 * matrixCount above latestCheckedIteration
-	 * although.. with reduce, everyone needs to do at same time.
-	 */
+		/* the person who does this should be the person who first hits
+		 * matrixCount above latestCheckedIteration
+		 * although.. with reduce, everyone needs to do at same time.
+		 */
 
-	/* This is basically a barrier every iteration.. actually nobody will ever
-	 * be 0, because they all necessarily got through their code if they are
-	 * here.
-	 */
+		/* This is basically a barrier every iteration.. actually nobody will ever
+		 * be 0, because they all necessarily got through their code if they are
+		 * here.
+		 */
 
-	/* How about doing it every matrixCount iterations (so we reduce as much
-	 * work as possible)?
-	 * Although, pretty much guarantees you will have 0s
-	 * Maybe do matrixCount of these every matrixCount iterations?
-	 * Although only one person can be matrixCount ahead, so everyone else is 0
-	 */
+		/* How about doing it every matrixCount iterations (so we reduce as much
+		 * work as possible)?
+		 * Although, pretty much guarantees you will have 0s
+		 * Maybe do matrixCount of these every matrixCount iterations?
+		 * Although only one person can be matrixCount ahead, so everyone else is 0
+		 */
 
-	/* Every matrixCount iterations, you declare the highest relax you have.
-	 * If everyone has a 'relaxed' somewhere, we investigate. Uh
-	 */
+		/* Every matrixCount iterations, you declare the highest relax you have.
+		 * If everyone has a 'relaxed' somewhere, we investigate. Uh
+		 */
 
-	/* Doesn't matter if everyone has finished an iteration if we can show that
-	 * that iteration is not relaxed.
-	 * Every matrixCount iterations, ask what the highest value for each
-	 * iteration was. If there is a 1 ('finished, not relaxed'), increment.
-	 * If max is 2, then check that min is also 2.
-	 */
+		/* Doesn't matter if everyone has finished an iteration if we can show that
+		 * that iteration is not relaxed.
+		 * Every matrixCount iterations, ask what the highest value for each
+		 * iteration was. If there is a 1 ('finished, not relaxed'), increment.
+		 * If max is 2, then check that min is also 2.
+		 */
 
-	/* If I'm relaxed, do I need to ask, or just tell I've signed off?*/
-	/* Since this is also being used to check that everyone's done
-	 * with the iteration.. but then again, only I need to be done with it.
-	 */
-	/* The reason the limit exists is so that you necessarily still have the
-	 * data for that iteration in your buffer. Guess it doesn't matter if you
-	 * overwrite an iteration that can't win. But you won't overwrite anyway?
-	 * You can only cycle after if I have read at least my value.
-	 */
+		/* If I'm relaxed, do I need to ask, or just tell I've signed off?*/
+		/* Since this is also being used to check that everyone's done
+		 * with the iteration.. but then again, only I need to be done with it.
+		 */
+		/* The reason the limit exists is so that you necessarily still have the
+		 * data for that iteration in your buffer. Guess it doesn't matter if you
+		 * overwrite an iteration that can't win. But you won't overwrite anyway?
+		 * You can only cycle after if I have read at least my value.
+		 */
 
-	printf("Gather!\n");
-	int nextIterationCheck = (latestCheckedIteration + 1) % matrixCount;
-	printf("progressArray is: %d\n", progressArray[nextIterationCheck]);
+		printf("Gather!\n");
+		int nextIterationCheck = (latestCheckedIteration + 1) % matrixCount;
+		printf("progressArray is: %d\n", progressArray[nextIterationCheck]);
 
-	//int *relaxResult;
-	int relaxResults[procs];
-	//int *relaxResults = calloc(procs, sizeof(int));
-//	if (rank == 0) {
-		//if (relaxed) {
-	/*MPI_Reduce(progressMatrix[nextIterationCheck][rank], relaxResult, 1,
-			MPI_INT, MPI_MIN, rank, MPI_COMM_WORLD);*/
+		//int *relaxResult;
+		int relaxResults[procs];
+		//int *relaxResults = calloc(procs, sizeof(int));
+	//	if (rank == 0) {
+			//if (relaxed) {
+		/*MPI_Reduce(progressMatrix[nextIterationCheck][rank], relaxResult, 1,
+				MPI_INT, MPI_MIN, rank, MPI_COMM_WORLD);*/
 
-	// looks like my mistake was expecting 'procs' receive count
-	// receive count is actually 'per proc'
-	MPI_Allgather(&progressArray[nextIterationCheck], 1, MPI_INT,
-	               relaxResults, 1, MPI_INT, MPI_COMM_WORLD);
+		// looks like my mistake was expecting 'procs' receive count
+		// receive count is actually 'per proc'
+		MPI_Allgather(&progressArray[nextIterationCheck], 1, MPI_INT,
+					   relaxResults, 1, MPI_INT, MPI_COMM_WORLD);
 
-	// looks like both results go into element 0 of relaxResults?
+		// looks like both results go into element 0 of relaxResults?
 
-	int min;
-	int max;
-	MPI_Reduce_local(relaxResults, &min, procs, MPI_INT, MPI_MIN);
-	MPI_Reduce_local(relaxResults, &max, procs, MPI_INT, MPI_MAX);
-	printf("Min was: %d \tMax was: %d\n", min, max);
+		int min;
+		int max;
+		MPI_Reduce_local(relaxResults, &min, procs, MPI_INT, MPI_MIN);
+		MPI_Reduce_local(relaxResults, &max, procs, MPI_INT, MPI_MAX);
+		printf("Min was: %d \tMax was: %d\n", min, max);
 
-	printf("progressArray is: %d\n", progressArray[nextIterationCheck]);
-		//}
-//	}
+		printf("progressArray is: %d\n", progressArray[nextIterationCheck]);
+			//}
+	//	}
 
-	/*
-	if (relaxResult == 0) {
+		/*
+		if (relaxResult == 0) {
 
-	} else if (relaxResult == 1) {
+		} else if (relaxResult == 1) {
 
-	} else {
+		} else {
 
-	}*/
+		}*/
 
-	/*==============================================================*/
-	// Swap pointers
-	/*==============================================================*/
+		/*==============================================================*/
+		// Swap pointers
+		/*==============================================================*/
 
-	/*sourceMatrix = (sourceMatrix+1)%matrixCount;
-	destMatrix = (destMatrix+1)%matrixCount;
+		/*sourceMatrix = (sourceMatrix+1)%matrixCount;
+		destMatrix = (destMatrix+1)%matrixCount;
 
-	source = matrices[sourceMatrix];
-	dest = matrices[destMatrix];*/
+		source = matrices[sourceMatrix];
+		dest = matrices[destMatrix];*/
 
-	/*==============================================================*/
-	// Give winning matrix to rank 0 to print
-	/*==============================================================*/
-	if (rank == 0) {
-		printf("Wrapping up..\n");
+		/*==============================================================*/
+		// Give winning matrix to rank 0 to print
+		/*==============================================================*/
+		if (rank == 0) {
+			printf("Wrapping up..\n");
 
-		// print all my operable rows, plus top edge
-		print1DMatrix(dest[0], myReadColumns, myReadRows-1);
+			// print all my operable rows, plus top edge
+			print1DMatrix(dest[0], myReadColumns, myReadRows-1);
 
-		// recycle my own matrix, since big enough, and no longer needed
-		VALTYPE *recvMatrixBuff = dest[0];
-		int currentProcOwnedRows;
-		int matrixBuffSize;
+			// recycle my own matrix, since big enough, and no longer needed
+			VALTYPE *recvMatrixBuff = dest[0];
+			int currentProcOwnedRows;
+			int matrixBuffSize;
 
-		int p;
-		for (p=1; p<procs; p++) {
-			int currentProcStartRow = rowStartForProc(p);
-			int currentProcEndRow = rowStartForProc(p+1)-1;
-			currentProcOwnedRows = currentProcEndRow - currentProcStartRow;
+			int p;
+			for (p=1; p<procs; p++) {
+				int currentProcStartRow = rowStartForProc(p);
+				int currentProcEndRow = rowStartForProc(p+1)-1;
+				currentProcOwnedRows = currentProcEndRow - currentProcStartRow;
 
-			// final proc is also responsible for sending non-operable edge
-			if (p == procs - 1) {
+				// final proc is also responsible for sending non-operable edge
+				if (p == procs - 1) {
+					currentProcOwnedRows++;
+				}
+
+				matrixBuffSize = currentProcOwnedRows*rowBuffSize;
+
+				//printf("Expecting buffer of size: %d\n", matrixBuffSize);
+
+				MPI_Recv(recvMatrixBuff, matrixBuffSize, MPI_VALTYPE,
+						p, (int)MATRIX_DATA, MPI_COMM_WORLD, &status);
+
+				print1DMatrix(recvMatrixBuff, myReadColumns, currentProcOwnedRows);
+			}
+		} else {
+			VALTYPE *sendMatrixBuff = dest[1];
+			int currentProcOwnedRows = myOperableRows;
+			// final proc must also send a non-operable edge
+			if (rank == procs - 1) {
 				currentProcOwnedRows++;
 			}
 
-			matrixBuffSize = currentProcOwnedRows*rowBuffSize;
+			int matrixBuffSize = rowBuffSize*currentProcOwnedRows;
 
-			//printf("Expecting buffer of size: %d\n", matrixBuffSize);
+			printf("Sending buffer of size: %d\n", matrixBuffSize);
 
-			MPI_Recv(recvMatrixBuff, matrixBuffSize, MPI_VALTYPE,
-				    p, (int)MATRIX_DATA, MPI_COMM_WORLD, &status);
-
-			print1DMatrix(recvMatrixBuff, myReadColumns, currentProcOwnedRows);
+			// send my operable values to rank 0
+			MPI_Send(sendMatrixBuff,matrixBuffSize,MPI_VALTYPE,
+							0,(int)MATRIX_DATA,MPI_COMM_WORLD);
 		}
-	} else {
-		VALTYPE *sendMatrixBuff = dest[1];
-		int currentProcOwnedRows = myOperableRows;
-		// final proc must also send a non-operable edge
-		if (rank == procs - 1) {
-			currentProcOwnedRows++;
-		}
-
-		int matrixBuffSize = rowBuffSize*currentProcOwnedRows;
-
-		printf("Sending buffer of size: %d\n", matrixBuffSize);
-
-		// send my operable values to rank 0
-		MPI_Send(sendMatrixBuff,matrixBuffSize,MPI_VALTYPE,
-						0,(int)MATRIX_DATA,MPI_COMM_WORLD);
-	}
+	//}
 
 	/*==============================================================*/
 	// Free matrix memory
