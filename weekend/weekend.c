@@ -236,15 +236,17 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 
 	// initialise progress tracking array
 	int progressArray[matrixCount];
-	// first iteration marked complete, unrelaxed
+	// 0th iteration considered complete, unrelaxed
 	progressArray[0] = 1;
 
 	/*==============================================================*/
 	// Algorithm variable declarations
 	/*==============================================================*/
-	signed int latestCheckedIteration = -1;
+	//signed int latestCheckedIteration = -1;
 	// iteration number
 	int n = 0;
+	signed int winningIterationMod = -1;
+	signed int winningIterationAbs = -1;
 
 	int sourceMatrix, destMatrix;
 	VALTYPE** source;
@@ -265,10 +267,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		int	        rowBuffSize;
 		VALTYPE surroundingValues;
 
-		int min[4];
-		int max[4];
-
-	for (n=0; n<matrixCount; n++) {
+	for (n=0; n<MAXITERATIONS; n++) {
 		sourceMatrix = n % matrixCount;
 		destMatrix = (n + 1) % matrixCount;
 
@@ -411,40 +410,58 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 
 		if (n % matrixCount == matrixCount-1) {
 			printf("Gather!\n");
-			int nextIterationCheck = (latestCheckedIteration + 1) % matrixCount;
-			printf("progressArray is: %d\n", progressArray[nextIterationCheck]);
+			int oldest = (n + 1) % matrixCount;
 
-			//int *relaxResult;
-			int relaxResults[procs];
-			//int *relaxResults = calloc(procs, sizeof(int));
-		//	if (rank == 0) {
-				//if (relaxed) {
+			for (i=0; i<matrixCount; i++) {
+				int currentMatrix = (oldest+i) % matrixCount;
+				printf("Checking iteration (mod): %d\n", i);
+				printf("my relax on that iteration was: %d\n", progressArray[currentMatrix]);
+				//int nextIterationCheck = (latestCheckedIteration + 1) % matrixCount;
+				//printf("progressArray is: %d\n", progressArray[nextIterationCheck]);
 
-			// looks like my mistake was expecting 'procs' receive count
-			// receive count is actually 'per proc'
-			MPI_Allgather(&progressArray[nextIterationCheck], 1, MPI_INT,
-						   relaxResults, 1, MPI_INT, MPI_COMM_WORLD);
+				//int *relaxResult;
+				int relaxResults;
+				//int *relaxResults = calloc(procs, sizeof(int));
+			//	if (rank == 0) {
+					//if (relaxed) {
 
-			// looks like both results go into element 0 of relaxResults?
+				// looks like my mistake was expecting 'procs' receive count
+				// receive count is actually 'per proc'
+				//MPI_Allgather(&progressArray[nextIterationCheck], 1, MPI_INT,
+							   //relaxResults, 1, MPI_INT, MPI_COMM_WORLD);
+				MPI_Allreduce(&progressArray[currentMatrix], &relaxResults, 1,
+						MPI_INT, MPI_MIN, MPI_COMM_WORLD);
 
-			printf("Relax 0 is: %d\n", relaxResults[0]);
-			printf("Relax 1 is: %d\n", relaxResults[1]);
+				/*int lowestRelax = 2;
+				for (i=0; i<procs; i++) {
+					lowestRelax = min(relaxResults)
+				}*/
 
-			int test[4] = {100,5,3,200};
-			min[0] = 3;
-			min[1] = 200;
-			min[2] = 6;
-			min[3] = 9;
-			max[0] = 3;
-			max[1] = 200;
-			max[2] = 6;
-			max[3] = 9;
-
-			MPI_Reduce_local(test, &min, 4, MPI_INT, MPI_MIN);
-			MPI_Reduce_local(test, &max, 4, MPI_INT, MPI_MAX);
-			printf("Min was: %d \tMax was: %d\n", min[3], max[3]);
-
-			printf("progressArray is: %d\n", progressArray[nextIterationCheck]);
+				printf("min is: %d\n", relaxResults);
+				if (relaxResults < 2) {
+					progressArray[currentMatrix] = 0;
+				} else {
+					// finished!
+					winningIterationMod = currentMatrix;
+					// necessarily, winning iteration did not happen in future
+					int currentIterationMod = n % matrixCount;
+					if (winningIterationMod > currentIterationMod) {
+						// if it is 2 above me in mod, it is (2-matrixCount) 'above' me in real
+						winningIterationAbs = n + (winningIterationMod-currentIterationMod) - matrixCount;
+					} else {
+						// if it is 2 below me in mod, it is 2 below me in real
+						winningIterationAbs = n - (currentIterationMod-winningIterationMod);
+					}
+					// stop evaluating further matrices
+					break;
+				}
+			}
+			// If answer found
+			if (winningIterationMod >= 0) {
+				printf("******************\n");
+				// do no further iterations
+				break;
+			}
 		}
 			//}
 	//	}
@@ -473,9 +490,12 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		// Give winning matrix to rank 0 to print
 		/*==============================================================*/
 		if (rank == 0) {
-			printf("Wrapping up..\n");
+			printf("[RANK0] Wrapping up..\n");
+			printf("First winning iteration was: %d\n", winningIterationAbs);
+			printf("This is matrix: %d\n", winningIterationMod);
 
 			// print all my operable rows, plus top edge
+			dest = matrices[winningIterationMod];
 			print1DMatrix(dest[0], myReadColumns, myReadRows-1);
 
 			// recycle my own matrix, since big enough, and no longer needed
@@ -504,6 +524,11 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 				print1DMatrix(recvMatrixBuff, myReadColumns, currentProcOwnedRows);
 			}
 		} else {
+			printf("[RANK0] Wrapping up..\n");
+			printf("First winning iteration was: %d\n", winningIterationAbs);
+			printf("This is matrix: %d\n", winningIterationMod);
+
+			dest = matrices[winningIterationMod];
 			sendMatrixBuff = dest[1];
 			int currentProcOwnedRows = myOperableRows;
 			// final proc must also send a non-operable edge
