@@ -598,8 +598,8 @@ int main(int argc, char **argv)
 			MPI_Finalize();
 			return 0;
 		}
-		if (mag>1000 || mag < 3) {
-			printf("Boundary error on argument 0 [int 3~1000]; saw %d\n", mag);
+		if (mag>100000 || mag < 3) {
+			printf("Boundary error on argument 0 [int 3~100000]; saw %d\n", mag);
 
 			MPI_Finalize();
 			return 0;
@@ -614,8 +614,8 @@ int main(int argc, char **argv)
 			MPI_Finalize();
 			return 0;
 		}
-		if (prec>0.1 || prec <0.00001 ) {
-			printf("Boundary error arg 2 [%s 0.00001~0.1]; saw %f\n",
+		if (prec>0.1 || prec <0.000001 ) {
+			printf("Boundary error arg 2 [%s 0.000001~0.1]; saw %f\n",
 					type, prec);
 
 			MPI_Finalize();
@@ -640,11 +640,11 @@ int main(int argc, char **argv)
 	} else {
 		printf("Saw %d arguments; expected 2.\n", argc-1);
 		printf("\nUsage:\n");
-		printf("yukkuri [int gridSize] [int threads] [%s precision]\n", type);
+		printf("yukkuri [int gridSize] [%s precision]\n", type);
 		printf("\nAllowed boundaries:\n");
-		printf("yukkuri [int 3~1000] [int 1~16] [%s 0.00001~0.1]\n", type);
+		printf("yukkuri [int 3~100000] [%s 0.000001~0.1]\n", type);
 		printf("\nExample usage:\n");
-		printf("yukkuri 100 4 0.005.\n");
+		printf("yukkuri 100 0.005\n");
 
 		MPI_Finalize();
 		return 1;
