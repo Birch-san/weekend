@@ -116,8 +116,9 @@ void initMatrix(VALTYPE **mat, int columns, int rows, int firstSeg) {
 
 void printMatrix(VALTYPE** mat, int columns, int rows) {
     printf("\n");
-    for (int i=0; i<rows; i++) {
-        for (int j=0; j<columns; j++) {
+    int i, j;
+    for (i=0; i<rows; i++) {
+        for (j=0; j<columns; j++) {
             // i is row, j is column
             printf("%f ", mat[i][j]);
         }
@@ -127,8 +128,9 @@ void printMatrix(VALTYPE** mat, int columns, int rows) {
 }
 
 void print1DMatrix(VALTYPE* matrix, int columns, int rows) {
-    for (int i=0; i<rows; i++) {
-        for (int j=0; j<columns; j++) {
+    int i, j;
+    for (i=0; i<rows; i++) {
+        for (j=0; j<columns; j++) {
             // i is row, j is column
             printf("%f ", matrix[i*columns + j]);
         }
@@ -138,7 +140,8 @@ void print1DMatrix(VALTYPE* matrix, int columns, int rows) {
 
 void printRow(VALTYPE* row, int columns) {
     printf("\n");
-	for (int j=0; j<columns; j++) {
+    int j;
+	for (j=0; j<columns; j++) {
 		// i is row, j is column
 		printf("%f ", row[j]);
 	}
