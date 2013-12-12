@@ -21,7 +21,9 @@
 #endif
 
 // enable verbose logging (matrix print on each iteration)
-#define verbose
+//#define verbose
+// enable verbose logging (matrix print on each iteration)
+//#define logallranks
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -197,16 +199,14 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	// how many columns this proc reads from
 	const int myReadColumns = mag;
 
-#ifdef verbose
 	// have each proc print out its own arguments
-	printf("Rank: %d\tStart Row: %d\tEnd Row: %d\n",
+	printf("[RANK%d\t] Start Row: %d\tEnd Row: %d\n",
 			rank, startRow, endRow);
 	// have one thread print out values common to all procs
 	if (rank == 0) {
 		printf("Operable Rows: %d\tMin Rows/Proc: %d\tRemainder Rows: %d\n",
 				operableRows, rowsMin, extraRows);
 	}
-#endif
 	
 	/*==============================================================*/
 	// Declare message constants
@@ -258,21 +258,21 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	/*==============================================================*/
 	// Algorithm
 	/*==============================================================*/
-		MPI_Status   status;
-		MPI_Request	send_start = NULL,send_end = NULL,
-					recv_end,recv_start;
-		VALTYPE       *sendStartRowBuff, *sendEndRowBuff,
-						*recvEndRowBuff, *recvStartRowBuff,
-						*recvMatrixBuff, *sendMatrixBuff;
+	MPI_Status   status;
+	MPI_Request	send_start = NULL,send_end = NULL,
+				recv_end,recv_start;
+	VALTYPE       *sendStartRowBuff, *sendEndRowBuff,
+					*recvEndRowBuff, *recvStartRowBuff,
+					*recvMatrixBuff, *sendMatrixBuff;
 
-		int	        rowBuffSize;
-		VALTYPE surroundingValues;
+	int	        rowBuffSize;
+	VALTYPE surroundingValues;
 
 	for (n=0; n<MAXITERATIONS; n++) {
 		sourceMatrix = n % matrixCount;
 		destMatrix = (n + 1) % matrixCount;
 
-		printf("thread %d beginning iteration %d.\n", rank, n);
+		printf("[RANK%d\t] beginning iteration %d.\n", rank, n);
 		source = matrices[sourceMatrix];
 		dest = matrices[destMatrix];
 
@@ -301,9 +301,10 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		}
 
 		progressArray[n % matrixCount] = relaxed ? 2 : 1;
-		printf("For iteration %d (%d modx), relaxed: %d\n", n, n % matrixCount, progressArray[n % matrixCount]);
-
+		printf("[RANK%d\t] For iteration %d (%d modx), relaxed: %d\n", rank, n, n % matrixCount, progressArray[n % matrixCount]);
+#ifdef verbose
 		printMatrix(dest, myReadColumns, myReadRows);
+#endif
 
 		/*==============================================================*/
 		// Send rows to neighbours
@@ -318,8 +319,10 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		// send start row to previous rank
 		if (rank > 0) {
 			// row 0 was from someone else, and we do not edit it
+#ifdef verbose
 			printf("Sending our start row to previous rank:\n");
 			printRow(dest[1], rowBuffSize);
+#endif
 			sendStartRowBuff = dest[1];
 			// make sure we finished sending any existing request
 			if (send_start) {
@@ -331,8 +334,10 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		// send end row to next rank (instant)
 		if (rank < procs - 1) {
 			// row end-1 was from someone else, and we do not edit it
+#ifdef verbose
 			printf("Sending our end row to next rank:\n");
 			printRow(dest[myReadRows-2], rowBuffSize);
+#endif
 			sendEndRowBuff = dest[myReadRows-2];
 			// make sure we finished sending any existing request.
 			if (send_end) {
@@ -366,7 +371,9 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 			MPI_Wait(&recv_start, &status);
 		}
 
+#ifdef verbose
 		printMatrix(dest, myReadColumns, myReadRows);
+#endif
 
 		/*==============================================================*/
 		// Read everyone's relaxed
@@ -411,13 +418,17 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		 */
 
 		if (n % matrixCount == matrixCount-1) {
+#ifdef verbose
 			printf("Gather!\n");
+#endif
 			int oldest = (n + 1) % matrixCount;
 
 			for (i=0; i<matrixCount; i++) {
 				int currentMatrix = (oldest+i) % matrixCount;
+#ifdef verbose
 				printf("Checking iteration (mod): %d\n", i);
 				printf("my relax on that iteration was: %d\n", progressArray[currentMatrix]);
+#endif
 				//int nextIterationCheck = (latestCheckedIteration + 1) % matrixCount;
 				//printf("progressArray is: %d\n", progressArray[nextIterationCheck]);
 
@@ -438,8 +449,9 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 				for (i=0; i<procs; i++) {
 					lowestRelax = min(relaxResults)
 				}*/
-
+#ifdef verbose
 				printf("min is: %d\n", relaxResults);
+#endif
 				if (relaxResults < 2) {
 					progressArray[currentMatrix] = 0;
 				} else {
@@ -460,7 +472,9 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 			}
 			// If answer found
 			if (winningIterationMod >= 0) {
+#ifdef verbose
 				printf("******************\n");
+#endif
 				// do no further iterations
 				break;
 			}
@@ -526,9 +540,11 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 				print1DMatrix(recvMatrixBuff, myReadColumns, currentProcOwnedRows);
 			}
 		} else {
+#ifdef verbose
 			printf("Wrapping up..\n");
 			printf("First winning iteration was: %d\n", winningIterationAbs);
 			printf("This is matrix: %d\n", winningIterationMod);
+#endif
 
 			dest = matrices[winningIterationMod];
 			sendMatrixBuff = dest[1];
@@ -540,7 +556,9 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 
 			int matrixBuffSize = rowBuffSize*currentProcOwnedRows;
 
+#ifdef verbose
 			printf("Sending buffer of size: %d\n", matrixBuffSize);
+#endif
 
 			// send my operable values to rank 0
 			MPI_Send(sendMatrixBuff,matrixBuffSize,MPI_VALTYPE,
@@ -562,8 +580,9 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	/*==============================================================*/
 	
 	//printf("(MAXITERATIONS reached) proc %d is returning.\n", id->rank);
-	printf("(EOF1 reached) proc %d is returning.\n", rank);
+#ifdef verbose
 	printf("(EOF reached) proc %d is returning.\n", rank);
+#endif
 	return -1;
 }
 
@@ -580,7 +599,12 @@ int main(int argc, char **argv)
 	MPI_Init(&argc, &argv);
 	MPI_Comm_size(MPI_COMM_WORLD, &size);
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-	printf("SIZE = %d RANK = %d\n",size,rank);
+#ifdef logallranks
+	printf("[RANK%d\t] SIZE = %d\n",rank,size);
+#endif
+	if (rank == 0) {
+		printf("SIZE = %d\n",size);
+	}
 
 	const char *type = VALNAME;
 	int mag;
@@ -652,10 +676,14 @@ int main(int argc, char **argv)
 
 	int endVal = doParallelRelax(mag, prec, size, rank);
 
+#ifdef verbose
 	printf("Reached MPI Finalize.\n");
+#endif
 
 	MPI_Finalize();
 
+#ifdef verbose
 	printf("Reached end of main.\n");
+#endif
 	return(endVal);
 }
