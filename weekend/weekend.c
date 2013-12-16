@@ -21,7 +21,7 @@
 #endif
 
 // enable verbose logging (matrix print on each iteration)
-//#define verbose
+#define verbose
 // enable verbose logging (matrix print on each iteration)
 //#define logallranks
 
@@ -44,19 +44,23 @@
        __typeof__ (b) _b = (b); \
      _a < _b ? _a : _b; })
 
+// return pointer to a VALTYPE matrix with magnitude 'mag'
 VALTYPE** buildMatrix(int width, int height) {
+	// allocate cleared memory for width * height values of type VALTYPE
     VALTYPE* values = calloc(height * width, sizeof(VALTYPE));
     if (!values) {
     	fprintf(stderr, "matrix value calloc failed!\n");
 		return 0;
     }
 
+    // allocate memory for pointers to 'height' rows of VALTYPEs
     VALTYPE** rows = malloc(height * sizeof(VALTYPE*));
     if (!rows) {
 		fprintf(stderr, "matrix row malloc failed!\n");
 		return 0;
 	}
 
+    // point each row to its insertion point in value array
     int i;
     for (i=0; i<height; i++) {
         rows[i] = values + i*width;
@@ -64,19 +68,23 @@ VALTYPE** buildMatrix(int width, int height) {
     return rows;
 }
 
+// return pointer to an int matrix with magnitude 'mag'
 int** buildIntMatrix(int width, int height) {
+	// allocate cleared memory for width * height values of type int
     int* values = calloc(height * width, sizeof(int));
     if (!values) {
     	fprintf(stderr, "matrix value calloc failed!\n");
 		return 0;
     }
 
+    // allocate memory for pointers to 'height' rows of VALTYPEs
     int** rows = malloc(height * sizeof(int*));
     if (!rows) {
 		fprintf(stderr, "matrix row malloc failed!\n");
 		return 0;
 	}
 
+    // point each row to its insertion point in value array.
     int i;
     for (i=0; i<height; i++) {
         rows[i] = values + i*width;
@@ -84,31 +92,27 @@ int** buildIntMatrix(int width, int height) {
     return rows;
 }
 
-void freeMatrix(VALTYPE **mat, int height) {
+// free() memory for malloc()ed VALTYPE matrix
+void freeMatrix(VALTYPE **mat) {
+	// free values
 	free(mat[0]);
+	// free row pointers
     free(mat);
 }
 
-void freeIntMatrix(int **mat, int height) {
-	free(mat[0]);
-    free(mat);
-}
-
-void initSquareMatrix(VALTYPE **mat, int mag, int firstSeg) {
-	int i;
-    for (i=0; i<mag; i++) {
-        mat[i][0] = 1.0f;
-        if (firstSeg) {
-        	mat[0][i] = 1.0f;
-        }
-    }
-}
-
+/* Initiates this matrix segment such that
+ * whole square matrix, 'mat', dimension 'mag',
+ * has 1s over first row and column.
+ * Other values assumed 0.
+ */
 void initMatrix(VALTYPE **mat, int columns, int rows, int firstSeg) {
+	// set first element in each row to 1
 	int i;
     for (i=0; i<rows; i++) {
         mat[i][0] = 1.0f;
     }
+
+    // top segment contains row 0, which must be filled with 1s.
     if (firstSeg) {
     	for (i=0; i<columns; i++) {
     		mat[0][i] = 1.0f;
@@ -116,6 +120,9 @@ void initMatrix(VALTYPE **mat, int columns, int rows, int firstSeg) {
     }
 }
 
+/* Print matrix 'mat', with 'columns'x'rows'.
+ * Vulnerable to other prints occurring mid-matrix.
+ */
 void printMatrix(VALTYPE** mat, int columns, int rows) {
     printf("\n");
     int i, j;
@@ -129,6 +136,10 @@ void printMatrix(VALTYPE** mat, int columns, int rows) {
     printf("\n");
 }
 
+/* Print 1D matrix, by breaking into rows every 'columns' elements.
+ * Mainly for receipt of matrix via MPI message.
+ * Vulnerable to other prints occurring mid-matrix.
+ */
 void print1DMatrix(VALTYPE* matrix, int columns, int rows) {
     int i, j;
     for (i=0; i<rows; i++) {
@@ -140,6 +151,7 @@ void print1DMatrix(VALTYPE* matrix, int columns, int rows) {
     }
 }
 
+// print a row of VALTYPEs, 'columns' wide.
 void printRow(VALTYPE* row, int columns) {
     printf("\n");
     int j;
@@ -150,7 +162,11 @@ void printRow(VALTYPE* row, int columns) {
     printf("\n\n");
 }
 
-signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
+/* Main worker function
+ * Iteratively relaxes grid of numbers. Thread state & identity is tied to
+ * a struct of arguments.
+ */
+signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrixCount) {
 	/*==============================================================*/
 	// Calculate row allocations for this proc
 	/*==============================================================*/
@@ -179,21 +195,28 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	// remainder of rows to allocate
 	const int extraRows = operableRows % procs;
 
-	/* Calculates the row a given thread starts operations from
+	/* Calculates the row a given process starts operations from.
+	 * This is an absolute position in the shared grid.
 	 * From the first valid row, add minimum rows per proc
-	 * then add to that the number of threads that took remainder rows so far
+	 * then add to that the number of procs that took remainder rows so far
 	 */
 #define rowStartForProc(a) \
 	( firstOperableRow + (a)*rowsMin + min((a), extraRows) )
 
-	// matrix row to start operations from
+	// matrix row to start operations from (absolute position)
 	const int startRow = rowStartForProc(rank);
-	/* matrix row to end operations at
+	/* matrix row to end operations at (absolute position)
 	 * formula provides gapless coverage up to next proc's start row
 	 */
 	const int endRow = rowStartForProc(rank+1)-1;
-	// how many rows this proc operates on
+
+	// how many rows this proc writes to in the loop
 	const int myOperableRows = endRow - startRow;
+
+	/* Calculate how many values we need to read from in the loop.
+	 * This value includes the neighbours of those values we write to.
+	 * It also decides how much memory we need to allocate for the grid.
+	 */
 	// how many rows this proc reads from
 	const int myReadRows = myOperableRows + 2;
 	// how many columns this proc reads from
@@ -207,27 +230,19 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		printf("Operable Rows: %d\tMin Rows/Proc: %d\tRemainder Rows: %d\n",
 				operableRows, rowsMin, extraRows);
 	}
-	
-	/*==============================================================*/
-	// Declare message constants
-	/*==============================================================*/
-	typedef enum {
-		ROW_DATA = 0,
-		MATRIX_DATA,
-		RELAX_UPDATE
-	} MESSAGE_TYPE;
 
 	/*==============================================================*/
 	// Allocate matrix pool memory
 	/*==============================================================*/
-	// how many matrices will be in pool (iterations we can think ahead)
-	const int matrixCount = max(2, procs);
 
+	// array of matrices
 	VALTYPE **matrices[matrixCount];
 
 	// initialise matrix pool
 	int i;
+	// build as many matrices as our cache demands; one used per iteration
 	for (i = 0; i<matrixCount; i++) {
+		// allocate memory for matrix
 		matrices[i] = buildMatrix(mag, mag);
 		if (!matrices[i]) {
 			fprintf(stderr, "matrix init failed!\n");
@@ -237,56 +252,97 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		initMatrix(matrices[i], myReadColumns, myReadRows, rank == 0);
 	}
 
-	// initialise progress tracking array
+	// array to track whether each cached matrix achieved relaxation
 	int progressArray[matrixCount];
 
+	// progress types
+	typedef enum {
+		UNFINISHED = 0,	// iteration has not been evaluated yet
+		NORELAX,		// iteration evaluated, was not relaxed
+		RELAXED			// iteration evaluated, was relaxed
+	} PROGRESS_TYPE;
+
 	/*==============================================================*/
-	// Algorithm variable declarations
+	// Iteration declarations
 	/*==============================================================*/
-	//signed int latestCheckedIteration = -1;
 	// iteration number
 	int n = 0;
-	signed int winningIterationMod = -1;
-	signed int winningIterationAbs = -1;
 
+	// iteration number for winning iteration
+	signed int winningIterationAbs = -1;
+	// winning iteration to modulus of cache size (points to matrix used)
+	signed int winningIterationMod = -1;
+
+	/*==============================================================*/
+	// Matrix pointer declarations
+	/*==============================================================*/
+
+	// array index of source and destination matrices, for reading and writing
 	int sourceMatrix, destMatrix;
+	// pointer to source matrix
 	VALTYPE** source;
+	// pointer to destination matrix
 	VALTYPE** dest;
 
-	int relaxed;
-	int j;
+	/*==============================================================*/
+	// Message passing declarations
+	/*==============================================================*/
+	// message types
+	typedef enum {
+		ROW_DATA = 0,	// shared row update from neighbour
+		MATRIX_DATA		// matrix portion sent upon final merge
+	} MESSAGE_TYPE;
+
+	// message tag and sender rank, of
+	MPI_Status   rowReceiptStatus;
+	// request structures for 'immediate' sending/receiving rows of territory
+	MPI_Request	send_start = NULL,	send_end = NULL,
+				recv_start;
+	// pointers to where matrices, start/end rows should be sent from/written to
+	VALTYPE     *sendStartRowBuff,	*sendEndRowBuff,
+				*recvEndRowBuff,	*recvStartRowBuff,
+				*recvMatrixBuff,	*sendMatrixBuff;
+
+	// size of one row will be dimension of matrix
+	int	rowBuffSize = mag;
+
 	/*==============================================================*/
 	// Algorithm
 	/*==============================================================*/
-	MPI_Status   status;
-	MPI_Request	send_start = NULL,send_end = NULL,
-				recv_end,recv_start;
-	VALTYPE       *sendStartRowBuff, *sendEndRowBuff,
-					*recvEndRowBuff, *recvStartRowBuff,
-					*recvMatrixBuff, *sendMatrixBuff;
 
-	int	        rowBuffSize;
-	VALTYPE surroundingValues;
-
+	// anneal the matrix iteratively, until fully relaxed (or iteration limit)
 	for (n=0; n<MAXITERATIONS; n++) {
+		printf("[RANK%d\t] beginning iteration %d.\n", rank, n);
+
+		// cycle source and destination pointers to next matrix in our cache
 		sourceMatrix = n % matrixCount;
 		destMatrix = (n + 1) % matrixCount;
 
-		printf("[RANK%d\t] beginning iteration %d.\n", rank, n);
+		// point source and destination to their respective matrices from array
 		source = matrices[sourceMatrix];
 		dest = matrices[destMatrix];
 
-		relaxed = 1;
-		for (i=1; i<=myOperableRows; i++) {
-			for (j=firstOperableColumn; j<= lastOperableColumn; j++) {
-				VALTYPE previousValue = source[i][j];
-				surroundingValues = 0;
-				surroundingValues += source[i-1][j];
-				surroundingValues += source[i+1][j];
-				surroundingValues += source[i][j-1];
-				surroundingValues += source[i][j+1];
+		// whether all values in our territory are relaxed this iteration.
+		int relaxed = 1;
 
+		/* Iterate through all matrix values within this thread's jurisdiction.
+		 * For each value, find average of all cardinal neighbours.
+		 */
+		for (i=1; i<=myOperableRows; i++) {
+			int j;
+			for (j=firstOperableColumn; j<= lastOperableColumn; j++) {
+				// Original value of this cell (for comparison)
+				VALTYPE previousValue = source[i][j];
+
+				// Find sum of neighbours
+				VALTYPE surroundingValues = source[i-1][j];
+				surroundingValues		 += source[i+1][j];
+				surroundingValues		 += source[i][j-1];
+				surroundingValues		 += source[i][j+1];
+
+				// Find average of neighbours
 				VALTYPE newValue = surroundingValues/4;
+				// Write this value into destination matrix
 				dest[i][j] = newValue;
 
 				// absolute difference between new and previous value
@@ -298,10 +354,35 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 					relaxed = delta < precision;
 				}
 			}
+			if (i==1) {
+				if (rank > 0) {
+					// row 0 was from someone else, and we do not edit it
+				#ifdef verbose
+						printf("Sending our start row to previous rank:\n");
+						printRow(dest[1], rowBuffSize);
+				#endif
+					sendStartRowBuff = dest[1];
+					// make sure we finished sending any existing request
+					if (send_start) {
+						MPI_Wait(&send_start, &rowReceiptStatus);
+					}
+					MPI_Isend(sendStartRowBuff,rowBuffSize,MPI_VALTYPE,
+								rank-1,(int)ROW_DATA,MPI_COMM_WORLD,&send_start);
+
+					//printf("Current receiving row:\n");
+					//printRow(dest[0], buffsize);
+					recvStartRowBuff = dest[0];
+					MPI_Irecv(recvStartRowBuff,rowBuffSize,MPI_VALTYPE,
+								   rank - 1,(int)ROW_DATA,MPI_COMM_WORLD,&recv_start);
+				}
+			}
 		}
 
-		progressArray[n % matrixCount] = relaxed ? 2 : 1;
-		printf("[RANK%d\t] For iteration %d (%d modx), relaxed: %d\n", rank, n, n % matrixCount, progressArray[n % matrixCount]);
+		// write to progress array whether this iteration achieved relaxation
+		progressArray[n % matrixCount] = relaxed ? RELAXED : NORELAX;
+		printf("[RANK%d\t] For iteration %d (%d modx), relaxed: %d\n",
+				rank, n, n % matrixCount, progressArray[n % matrixCount]);
+
 #ifdef verbose
 		printMatrix(dest, myReadColumns, myReadRows);
 #endif
@@ -310,27 +391,9 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 		// Send rows to neighbours
 		/*==============================================================*/
 
-
-		/* btw we could totally send these messages as soon as we calculate
-		 * the relevant row
-		 */
-		rowBuffSize = mag;
-
 		// send start row to previous rank
-		if (rank > 0) {
-			// row 0 was from someone else, and we do not edit it
-#ifdef verbose
-			printf("Sending our start row to previous rank:\n");
-			printRow(dest[1], rowBuffSize);
-#endif
-			sendStartRowBuff = dest[1];
-			// make sure we finished sending any existing request
-			if (send_start) {
-				MPI_Wait(&send_start, &status);
-			}
-			MPI_Isend(sendStartRowBuff,rowBuffSize,MPI_VALTYPE,
-							rank-1,(int)ROW_DATA,MPI_COMM_WORLD,&send_start);
-		}
+
+		// grab start row from previous rank (blocking?)
 		// send end row to next rank (instant)
 		if (rank < procs - 1) {
 			// row end-1 was from someone else, and we do not edit it
@@ -341,34 +404,21 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 			sendEndRowBuff = dest[myReadRows-2];
 			// make sure we finished sending any existing request.
 			if (send_end) {
-				MPI_Wait(&send_end, &status);
+				MPI_Wait(&send_end, &rowReceiptStatus);
 			}
 			MPI_Isend(sendEndRowBuff,rowBuffSize,MPI_VALTYPE,
 							rank+1,(int)ROW_DATA,MPI_COMM_WORLD,&send_end);
-		}
 
-		// now grab end row from next rank (blocking?)
-		if (rank < procs - 1) {
+
+			// now grab end row from next rank (blocking?)
 			//printf("Current receiving row:\n");
 			//printRow(dest[myReadRows-1], buffsize);
 			recvEndRowBuff = dest[myReadRows-1];
-			MPI_Irecv(recvEndRowBuff,rowBuffSize,MPI_VALTYPE,
-						   rank + 1,(int)ROW_DATA,MPI_COMM_WORLD,&recv_end);
-		}
-		// grab start row from previous rank (blocking?)
-		if (rank > 0) {
-			//printf("Current receiving row:\n");
-			//printRow(dest[0], buffsize);
-			recvStartRowBuff = dest[0];
-			MPI_Irecv(recvStartRowBuff,rowBuffSize,MPI_VALTYPE,
-						   rank - 1,(int)ROW_DATA,MPI_COMM_WORLD,&recv_start);
-		}
-
-		if (rank < procs - 1) {
-			MPI_Wait(&recv_end, &status);
+			MPI_Recv(recvEndRowBuff,rowBuffSize,MPI_VALTYPE,
+						   rank + 1,(int)ROW_DATA,MPI_COMM_WORLD,&rowReceiptStatus);
 		}
 		if (rank > 0) {
-			MPI_Wait(&recv_start, &status);
+			MPI_Wait(&recv_start, &rowReceiptStatus);
 		}
 
 #ifdef verbose
@@ -452,21 +502,25 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 #ifdef verbose
 				printf("min is: %d\n", relaxResults);
 #endif
-				if (relaxResults < 2) {
-					progressArray[currentMatrix] = 0;
+				if (relaxResults < RELAXED) {
+					// clear historical progress. not strictly necessary though.
+					progressArray[currentMatrix] = UNFINISHED;
 				} else {
 					// finished!
 					winningIterationMod = currentMatrix;
 					// necessarily, winning iteration did not happen in future
 					int currentIterationMod = n % matrixCount;
+
+					// abs difference will be the mod difference
+					winningIterationAbs = n - (currentIterationMod-winningIterationMod);
+
+					// if (to mod) winning iteration is higher than current,
 					if (winningIterationMod > currentIterationMod) {
-						// if it is 2 above me in mod, it is (2-matrixCount) 'above' me in real
-						winningIterationAbs = n + (winningIterationMod-currentIterationMod) - matrixCount;
-					} else {
-						// if it is 2 below me in mod, it is 2 below me in real
-						winningIterationAbs = n - (currentIterationMod-winningIterationMod);
+						// wind the iteration back by the modulus
+						winningIterationAbs -= matrixCount;
 					}
-					// stop evaluating further matrices
+
+					// winner found; stop evaluating further matrices
 					break;
 				}
 			}
@@ -535,7 +589,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 				//printf("Expecting buffer of size: %d\n", matrixBuffSize);
 
 				MPI_Recv(recvMatrixBuff, matrixBuffSize, MPI_VALTYPE,
-						p, (int)MATRIX_DATA, MPI_COMM_WORLD, &status);
+						p, (int)MATRIX_DATA, MPI_COMM_WORLD, &rowReceiptStatus);
 
 				print1DMatrix(recvMatrixBuff, myReadColumns, currentProcOwnedRows);
 			}
@@ -572,7 +626,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	
 	// free matrix pool
 	for (i = 0; i<matrixCount; i++) {
-		freeMatrix(matrices[i], mag);
+		freeMatrix(matrices[i]);
 	}
 
 	/*==============================================================*/
@@ -586,8 +640,8 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank) {
 	return -1;
 }
 
-int doParallelRelax(int mag, VALTYPE precision, int procs, int rank) {
-	relaxGrid(mag, precision, procs, rank);
+int doParallelRelax(int mag, VALTYPE precision, int procs, int rank, int cacheSize) {
+	relaxGrid(mag, precision, procs, rank, cacheSize);
 
 	// success
 	return 0;
@@ -595,23 +649,32 @@ int doParallelRelax(int mag, VALTYPE precision, int procs, int rank) {
 
 int main(int argc, char **argv)
 {
-	int size, rank;
+	int size, rank, cacheSize;
+
+	// Wait for all processes to begin
 	MPI_Init(&argc, &argv);
+
+	// inquire for number of processes
 	MPI_Comm_size(MPI_COMM_WORLD, &size);
+	// inquire which process number we are
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
 #ifdef logallranks
-	printf("[RANK%d\t] SIZE = %d\n",rank,size);
+	printf("[RANK%d\t] PROCS = %d\n",rank,size);
 #endif
 	if (rank == 0) {
-		printf("SIZE = %d\n",size);
+		printf("PROCS = %d\n",size);
 	}
+
+	// max useful cache size happens to be number of processes; this is default.
+	cacheSize = size;
 
 	const char *type = VALNAME;
 	int mag;
 	VALTYPE prec;
 
 	// First argument is executable name
-	if (argc == 3) {
+	if (argc >= 3 && argc < 5) {
 		int currentArg = 1;
 		int parseMatches = 0;
 
@@ -622,8 +685,8 @@ int main(int argc, char **argv)
 			MPI_Finalize();
 			return 0;
 		}
-		if (mag>100000 || mag < 3) {
-			printf("Boundary error on argument 0 [int 3~100000]; saw %d\n", mag);
+		if (mag>65535 || mag < 3) {
+			printf("Boundary error on argument 0 [int 3~65535]; saw %d\n", mag);
 
 			MPI_Finalize();
 			return 0;
@@ -661,20 +724,41 @@ int main(int argc, char **argv)
 			return 0;
 		}
 	#endif
+		// if optional 'cache size' argument is present
+		if (argc == 4) {
+			parseMatches = sscanf (argv[currentArg++], "%d", &cacheSize);
+			if (parseMatches != 1) {
+				printf("Parse error on argument 0 [int cacheSize]\n");
+
+				MPI_Finalize();
+				return 0;
+			}
+			if (cacheSize > size || cacheSize < 2) {
+				printf("Boundary error on argument 0 [int 2~procs]; saw %d\n", cacheSize);
+
+				MPI_Finalize();
+				return 0;
+			}
+		}
 	} else {
-		printf("Saw %d arguments; expected 2.\n", argc-1);
+		printf("Saw %d arguments; expected 2 (+1 optional).\n", argc-1);
 		printf("\nUsage:\n");
-		printf("yukkuri [int gridSize] [%s precision]\n", type);
+		printf("weekend [int gridSize] [%s prec] ([int cacheSize])\n", type);
 		printf("\nAllowed boundaries:\n");
-		printf("yukkuri [int 3~100000] [%s 0.000001~0.1]\n", type);
-		printf("\nExample usage:\n");
-		printf("yukkuri 100 0.005\n");
+		printf("weekend [int 3~65535] [%s 0.000001~0.1] [int 2~procs]\n", type);
+		printf("\nExample usages:\n");
+		printf("weekend 100 0.005\n");
+		printf("weekend 100 0.005 2\n");
 
 		MPI_Finalize();
 		return 1;
 	}
 
-	int endVal = doParallelRelax(mag, prec, size, rank);
+	if (rank == 0) {
+		printf("Cached iterations = %d\n", cacheSize);
+	}
+
+	int endVal = doParallelRelax(mag, prec, size, rank, cacheSize);
 
 #ifdef verbose
 	printf("Reached MPI Finalize.\n");
