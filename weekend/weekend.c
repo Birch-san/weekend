@@ -211,12 +211,12 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 	const int endRow = rowStartForProc(rank+1)-1;
 
 	// how many rows this proc writes to in the loop
-	const int myOperableRows = endRow - startRow + 1;
+	const int myOperableRows = (endRow - startRow) + 1;
 
 	// first row we write to (relative to our memory)
 	const int myFirstOperableRow = 1;
 	// last row we write to (relative to our memory)
-	const int myLastOperableRow = 1 + myOperableRows;
+	const int myLastOperableRow = myFirstOperableRow + (myOperableRows - 1);
 
 	/* Calculate how many values we need to read from in the loop.
 	 * This value includes the neighbours of those values we write to.
@@ -240,6 +240,13 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 		printf("Operable Rows: %d\tMin Rows/Proc: %d\tRemainder Rows: %d\n",
 				operableRows, rowsMin, extraRows);
 	}
+#ifdef verbose
+	// have each proc print out values relative to its own memory
+	printf("[RANK%d\t] (Rel) Writable Start Row: %d\tEnd Row: %d\n",
+			rank, myFirstOperableRow, myLastOperableRow);
+	printf("[RANK%d\t] (Rel) Readable Start Row: %d\tEnd Row: %d\n",
+			rank, myFirstReadRow, myLastReadRow);
+#endif
 
 	/*==============================================================*/
 	// Allocate matrix pool memory
@@ -307,7 +314,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 	MPI_Status   rowReceiptStatus;
 	// request structures for 'immediate' sending/receiving rows of territory
 	MPI_Request	send_start = NULL,	send_end = NULL,
-				recv_start;
+				recv_start,			recv_end;
 	// pointers to where matrices, start/end rows should be sent from/written to
 	VALTYPE     *sendStartRowBuff,	*sendEndRowBuff,
 				*recvEndRowBuff,	*recvStartRowBuff,
@@ -364,29 +371,6 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 					relaxed = delta < precision;
 				}
 			}
-			if (i==1) {
-				if (rank > 0) {
-					// row 0 was from someone else, and we do not edit it
-				#ifdef verbose
-						printf("Sending our start row to previous rank:\n");
-						printRow(dest[myFirstOperableRow], rowBuffSize);
-				#endif
-					sendStartRowBuff = dest[myFirstOperableRow];
-					// make sure we finished sending any existing request
-					if (send_start) {
-						MPI_Wait(&send_start, &rowReceiptStatus);
-					}
-					MPI_Isend(sendStartRowBuff,rowBuffSize,MPI_VALTYPE,
-								rank-1,(int)ROW_DATA,MPI_COMM_WORLD,&send_start);
-#ifdef verbose
-					printf("Current receiving over row:\n");
-					printRow(dest[myFirstReadRow], rowBuffSize);
-#endif
-					recvStartRowBuff = dest[myFirstReadRow];
-					MPI_Irecv(recvStartRowBuff,rowBuffSize,MPI_VALTYPE,
-								   rank - 1,(int)ROW_DATA,MPI_COMM_WORLD,&recv_start);
-				}
-			}
 		}
 
 		// write to progress array whether this iteration achieved relaxation
@@ -403,37 +387,66 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 		/*==============================================================*/
 
 		// send start row to previous rank
-
-		// grab start row from previous rank (blocking?)
+		if (rank > 0) {
+			// row 0 was from someone else, and we do not edit it
+#ifdef verbose
+			printf("Sending our start row to previous rank:\n");
+			printRow(dest[myFirstOperableRow], rowBuffSize);
+#endif
+			sendStartRowBuff = dest[myFirstOperableRow];
+			// make sure we finished sending any existing request
+			if (send_start) {
+				MPI_Wait(&send_start, &rowReceiptStatus);
+			}
+			MPI_Isend(sendStartRowBuff,rowBuffSize,MPI_VALTYPE,
+							rank-1,(int)ROW_DATA,MPI_COMM_WORLD,&send_start);
+		}
 		// send end row to next rank (instant)
 		if (rank < procs - 1) {
 			// row end-1 was from someone else, and we do not edit it
 #ifdef verbose
 			printf("Sending our end row to next rank:\n");
-			printRow(dest[myLastReadRow], rowBuffSize);
+			printRow(dest[myLastOperableRow], rowBuffSize);
 #endif
-			sendEndRowBuff = dest[myLastReadRow];
+			sendEndRowBuff = dest[myLastOperableRow];
 			// make sure we finished sending any existing request.
 			if (send_end) {
 				MPI_Wait(&send_end, &rowReceiptStatus);
 			}
 			MPI_Isend(sendEndRowBuff,rowBuffSize,MPI_VALTYPE,
 							rank+1,(int)ROW_DATA,MPI_COMM_WORLD,&send_end);
+		}
 
+		// now grab end row from next rank (blocking?)
+		if (rank < procs - 1) {
 #ifdef verbose
-			// now grab end row from next rank (blocking?)
-			printf("Current receiving over row:\n");
-			printRow(dest[myReadRows-1], rowBuffSize);
+			printf("Currently receiving over last row:\n");
+			printRow(dest[myLastReadRow], rowBuffSize);
 #endif
-			recvEndRowBuff = dest[myReadRows-1];
-			MPI_Recv(recvEndRowBuff,rowBuffSize,MPI_VALTYPE,
-						   rank + 1,(int)ROW_DATA,MPI_COMM_WORLD,&rowReceiptStatus);
+			recvEndRowBuff = dest[myLastReadRow];
+			MPI_Irecv(recvEndRowBuff,rowBuffSize,MPI_VALTYPE,
+						   rank + 1,(int)ROW_DATA,MPI_COMM_WORLD,&recv_end);
+		}
+		// grab start row from previous rank (blocking?)
+		if (rank > 0) {
+#ifdef verbose
+			printf("Currently receiving over first row:\n");
+			printRow(dest[myFirstReadRow], rowBuffSize);
+#endif
+			recvStartRowBuff = dest[myFirstReadRow];
+			MPI_Irecv(recvStartRowBuff,rowBuffSize,MPI_VALTYPE,
+						   rank - 1,(int)ROW_DATA,MPI_COMM_WORLD,&recv_start);
+		}
+
+		if (rank < procs - 1) {
+			MPI_Wait(&recv_end, &rowReceiptStatus);
 		}
 		if (rank > 0) {
 			MPI_Wait(&recv_start, &rowReceiptStatus);
 		}
 
 #ifdef verbose
+		printf("Final matrix for this iteration:\n");
 		printMatrix(dest, myReadColumns, myReadRows);
 #endif
 
