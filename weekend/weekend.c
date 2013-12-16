@@ -211,7 +211,12 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 	const int endRow = rowStartForProc(rank+1)-1;
 
 	// how many rows this proc writes to in the loop
-	const int myOperableRows = endRow - startRow;
+	const int myOperableRows = endRow - startRow + 1;
+
+	// first row we write to (relative to our memory)
+	const int myFirstOperableRow = 1;
+	// last row we write to (relative to our memory)
+	const int myLastOperableRow = 1 + myOperableRows;
 
 	/* Calculate how many values we need to read from in the loop.
 	 * This value includes the neighbours of those values we write to.
@@ -221,6 +226,11 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 	const int myReadRows = myOperableRows + 2;
 	// how many columns this proc reads from
 	const int myReadColumns = mag;
+
+	// first row we read from (relative to our memory)
+	const int myFirstReadRow = 0;
+	// last row we read from (relative to our memory)
+	const int myLastReadRow = myReadRows-1;
 
 	// have each proc print out its own arguments
 	printf("[RANK%d\t] Start Row: %d\tEnd Row: %d\n",
@@ -328,7 +338,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 		/* Iterate through all matrix values within this thread's jurisdiction.
 		 * For each value, find average of all cardinal neighbours.
 		 */
-		for (i=1; i<=myOperableRows; i++) {
+		for (i=myFirstOperableRow; i<=myLastOperableRow; i++) {
 			int j;
 			for (j=firstOperableColumn; j<= lastOperableColumn; j++) {
 				// Original value of this cell (for comparison)
@@ -359,19 +369,20 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 					// row 0 was from someone else, and we do not edit it
 				#ifdef verbose
 						printf("Sending our start row to previous rank:\n");
-						printRow(dest[1], rowBuffSize);
+						printRow(dest[myFirstOperableRow], rowBuffSize);
 				#endif
-					sendStartRowBuff = dest[1];
+					sendStartRowBuff = dest[myFirstOperableRow];
 					// make sure we finished sending any existing request
 					if (send_start) {
 						MPI_Wait(&send_start, &rowReceiptStatus);
 					}
 					MPI_Isend(sendStartRowBuff,rowBuffSize,MPI_VALTYPE,
 								rank-1,(int)ROW_DATA,MPI_COMM_WORLD,&send_start);
-
-					//printf("Current receiving row:\n");
-					//printRow(dest[0], buffsize);
-					recvStartRowBuff = dest[0];
+#ifdef verbose
+					printf("Current receiving over row:\n");
+					printRow(dest[myFirstReadRow], rowBuffSize);
+#endif
+					recvStartRowBuff = dest[myFirstReadRow];
 					MPI_Irecv(recvStartRowBuff,rowBuffSize,MPI_VALTYPE,
 								   rank - 1,(int)ROW_DATA,MPI_COMM_WORLD,&recv_start);
 				}
@@ -399,9 +410,9 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 			// row end-1 was from someone else, and we do not edit it
 #ifdef verbose
 			printf("Sending our end row to next rank:\n");
-			printRow(dest[myReadRows-2], rowBuffSize);
+			printRow(dest[myLastReadRow], rowBuffSize);
 #endif
-			sendEndRowBuff = dest[myReadRows-2];
+			sendEndRowBuff = dest[myLastReadRow];
 			// make sure we finished sending any existing request.
 			if (send_end) {
 				MPI_Wait(&send_end, &rowReceiptStatus);
@@ -409,10 +420,11 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 			MPI_Isend(sendEndRowBuff,rowBuffSize,MPI_VALTYPE,
 							rank+1,(int)ROW_DATA,MPI_COMM_WORLD,&send_end);
 
-
+#ifdef verbose
 			// now grab end row from next rank (blocking?)
-			//printf("Current receiving row:\n");
-			//printRow(dest[myReadRows-1], buffsize);
+			printf("Current receiving over row:\n");
+			printRow(dest[myReadRows-1], rowBuffSize);
+#endif
 			recvEndRowBuff = dest[myReadRows-1];
 			MPI_Recv(recvEndRowBuff,rowBuffSize,MPI_VALTYPE,
 						   rank + 1,(int)ROW_DATA,MPI_COMM_WORLD,&rowReceiptStatus);
