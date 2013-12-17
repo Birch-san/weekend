@@ -7,7 +7,7 @@
 #define MAXITERATIONS 100000000
 
 // use floats or doubles
-#define VALCHOICE 1
+#define VALCHOICE 0
 #if VALCHOICE == 0
 #define VALTYPE float
 #define MPI_VALTYPE MPI_FLOAT
@@ -21,7 +21,7 @@
 #endif
 
 // enable verbose logging (matrix print on each iteration)
-#define verbose
+//#define verbose
 // enable verbose logging (matrix print on each iteration)
 //#define logallranks
 
@@ -314,7 +314,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 	MPI_Status   rowReceiptStatus;
 	// request structures for 'immediate' sending/receiving rows of territory
 	MPI_Request	send_start = NULL,	send_end = NULL,
-				recv_start,			recv_end;
+				recv_start;
 	// pointers to where matrices, start/end rows should be sent from/written to
 	VALTYPE     *sendStartRowBuff,	*sendEndRowBuff,
 				*recvEndRowBuff,	*recvStartRowBuff,
@@ -386,61 +386,71 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 		// Send rows to neighbours
 		/*==============================================================*/
 
-		// send start row to previous rank
+		// if you have a 'previous rank', exchange the edge row you share
 		if (rank > 0) {
-			// row 0 was from someone else, and we do not edit it
 #ifdef verbose
 			printf("Sending our start row to previous rank:\n");
 			printRow(dest[myFirstOperableRow], rowBuffSize);
 #endif
+			// first row we wrote to in this iteration, needs to be shared
 			sendStartRowBuff = dest[myFirstOperableRow];
-			// make sure we finished sending any existing request
+
+			// make sure we finished sending last iteration's row
 			if (send_start) {
+				// wait for buffer to be emptied (blocking)
 				MPI_Wait(&send_start, &rowReceiptStatus);
 			}
+			// (start) sending our top written row, to the previous rank
 			MPI_Isend(sendStartRowBuff,rowBuffSize,MPI_VALTYPE,
 							rank-1,(int)ROW_DATA,MPI_COMM_WORLD,&send_start);
-		}
-		// send end row to next rank (instant)
-		if (rank < procs - 1) {
-			// row end-1 was from someone else, and we do not edit it
-#ifdef verbose
-			printf("Sending our end row to next rank:\n");
-			printRow(dest[myLastOperableRow], rowBuffSize);
-#endif
-			sendEndRowBuff = dest[myLastOperableRow];
-			// make sure we finished sending any existing request.
-			if (send_end) {
-				MPI_Wait(&send_end, &rowReceiptStatus);
-			}
-			MPI_Isend(sendEndRowBuff,rowBuffSize,MPI_VALTYPE,
-							rank+1,(int)ROW_DATA,MPI_COMM_WORLD,&send_end);
-		}
 
-		// now grab end row from next rank (blocking?)
-		if (rank < procs - 1) {
+
 #ifdef verbose
-			printf("Currently receiving over last row:\n");
-			printRow(dest[myLastReadRow], rowBuffSize);
-#endif
-			recvEndRowBuff = dest[myLastReadRow];
-			MPI_Irecv(recvEndRowBuff,rowBuffSize,MPI_VALTYPE,
-						   rank + 1,(int)ROW_DATA,MPI_COMM_WORLD,&recv_end);
-		}
-		// grab start row from previous rank (blocking?)
-		if (rank > 0) {
-#ifdef verbose
-			printf("Currently receiving over first row:\n");
+			printf("Received data will overwrite these first row contents:\n");
 			printRow(dest[myFirstReadRow], rowBuffSize);
 #endif
+			// first row we read this iteration, needs to be updated by neighbor
 			recvStartRowBuff = dest[myFirstReadRow];
+
+			// (start) receiving our top read row, from the previous rank
+			// non-blocking, so we can setup exchange of other row in meantime.
 			MPI_Irecv(recvStartRowBuff,rowBuffSize,MPI_VALTYPE,
 						   rank - 1,(int)ROW_DATA,MPI_COMM_WORLD,&recv_start);
 		}
 
+		// if you have a 'next rank', exchange the edge row you share
 		if (rank < procs - 1) {
-			MPI_Wait(&recv_end, &rowReceiptStatus);
+#ifdef verbose
+			printf("Sending our end row to next rank:\n");
+			printRow(dest[myLastOperableRow], rowBuffSize);
+#endif
+			// last row we wrote to in this iteration, needs to be shared
+			sendEndRowBuff = dest[myLastOperableRow];
+
+			// make sure we finished sending last iteration's row
+			if (send_end) {
+				// wait for buffer to be emptied (blocking)
+				MPI_Wait(&send_end, &rowReceiptStatus);
+			}
+			// (start) sending our bottom written row, to the next rank
+			MPI_Isend(sendEndRowBuff,rowBuffSize,MPI_VALTYPE,
+							rank+1,(int)ROW_DATA,MPI_COMM_WORLD,&send_end);
+
+
+#ifdef verbose
+			printf("Received data will overwrite these last row contents:\n");
+			printRow(dest[myLastReadRow], rowBuffSize);
+#endif
+			// last row we read this iteration, needs to be updated by neighbor
+			recvEndRowBuff = dest[myLastReadRow];
+
+			// receive our bottom read row, from next rank.
+			// blocking; can't start next iteration without this information.
+			MPI_Recv(recvEndRowBuff,rowBuffSize,MPI_VALTYPE,
+						   rank + 1,(int)ROW_DATA,MPI_COMM_WORLD,&rowReceiptStatus);
 		}
+
+		// work we could do in the meantime has now been done; revisit this call
 		if (rank > 0) {
 			MPI_Wait(&recv_start, &rowReceiptStatus);
 		}
@@ -496,8 +506,12 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 #ifdef verbose
 			printf("Gather!\n");
 #endif
-			int oldest = (n + 1) % matrixCount;
 
+			int relaxResults[matrixCount];
+			MPI_Allreduce(&progressArray, &relaxResults, matrixCount,
+									MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+
+			int oldest = (n + 1) % matrixCount;
 			for (i=0; i<matrixCount; i++) {
 				int currentMatrix = (oldest+i) % matrixCount;
 #ifdef verbose
@@ -508,7 +522,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 				//printf("progressArray is: %d\n", progressArray[nextIterationCheck]);
 
 				//int *relaxResult;
-				int relaxResults;
+				//int relaxResults;
 				//int *relaxResults = calloc(procs, sizeof(int));
 			//	if (rank == 0) {
 					//if (relaxed) {
@@ -517,8 +531,8 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 				// receive count is actually 'per proc'
 				//MPI_Allgather(&progressArray[nextIterationCheck], 1, MPI_INT,
 							   //relaxResults, 1, MPI_INT, MPI_COMM_WORLD);
-				MPI_Allreduce(&progressArray[currentMatrix], &relaxResults, 1,
-						MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+				//MPI_Allreduce(&progressArray[currentMatrix], &relaxResults, 1,
+					//	MPI_INT, MPI_MIN, MPI_COMM_WORLD);
 
 				/*int lowestRelax = 2;
 				for (i=0; i<procs; i++) {
@@ -527,7 +541,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 #ifdef verbose
 				printf("min is: %d\n", relaxResults);
 #endif
-				if (relaxResults < RELAXED) {
+				if (relaxResults[currentMatrix] < RELAXED) {
 					// clear historical progress. not strictly necessary though.
 					progressArray[currentMatrix] = UNFINISHED;
 				} else {
@@ -584,13 +598,14 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 		/*==============================================================*/
 		// Give winning matrix to rank 0 to print
 		/*==============================================================*/
+		int destMatrixMod = (winningIterationMod + 1) % matrixCount;
 		if (rank == 0) {
 			printf("[RANK0] Wrapping up..\n");
 			printf("First winning iteration was: %d\n", winningIterationAbs);
-			printf("This is matrix: %d\n", winningIterationMod);
+			printf("This is matrix: %d\n", destMatrixMod);
 
 			// print all my operable rows, plus top edge
-			dest = matrices[winningIterationMod];
+			dest = matrices[destMatrixMod];
 			print1DMatrix(dest[0], myReadColumns, myReadRows-1);
 
 			// recycle my own matrix, since big enough, and no longer needed
@@ -602,7 +617,7 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 			for (p=1; p<procs; p++) {
 				int currentProcStartRow = rowStartForProc(p);
 				int currentProcEndRow = rowStartForProc(p+1)-1;
-				currentProcOwnedRows = currentProcEndRow - currentProcStartRow;
+				currentProcOwnedRows = currentProcEndRow - currentProcStartRow + 1;
 
 				// final proc is also responsible for sending non-operable edge
 				if (p == procs - 1) {
@@ -610,8 +625,9 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 				}
 
 				matrixBuffSize = currentProcOwnedRows*rowBuffSize;
-
-				//printf("Expecting buffer of size: %d\n", matrixBuffSize);
+#ifdef verbose
+				printf("Expecting buffer of size: %d\n", matrixBuffSize);
+#endif
 
 				MPI_Recv(recvMatrixBuff, matrixBuffSize, MPI_VALTYPE,
 						p, (int)MATRIX_DATA, MPI_COMM_WORLD, &rowReceiptStatus);
@@ -622,10 +638,10 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 #ifdef verbose
 			printf("Wrapping up..\n");
 			printf("First winning iteration was: %d\n", winningIterationAbs);
-			printf("This is matrix: %d\n", winningIterationMod);
+			printf("This is matrix: %d\n", destMatrixMod);
 #endif
 
-			dest = matrices[winningIterationMod];
+			dest = matrices[destMatrixMod];
 			sendMatrixBuff = dest[1];
 			int currentProcOwnedRows = myOperableRows;
 			// final proc must also send a non-operable edge
@@ -710,6 +726,7 @@ int main(int argc, char **argv)
 			MPI_Finalize();
 			return 0;
 		}
+		// 65535*65535 matrix is largest we can index through using an int.
 		if (mag>65535 || mag < 3) {
 			printf("Boundary error on argument 0 [int 3~65535]; saw %d\n", mag);
 
@@ -770,13 +787,22 @@ int main(int argc, char **argv)
 		printf("\nUsage:\n");
 		printf("weekend [int gridSize] [%s prec] ([int cacheSize])\n", type);
 		printf("\nAllowed boundaries:\n");
-		printf("weekend [int 3~65535] [%s 0.000001~0.1] [int 2~procs]\n", type);
+		printf("weekend [int 3~65535] [%s 0.000001~0.1] ([int 2~procs])\n",
+				type);
 		printf("\nExample usages:\n");
 		printf("weekend 100 0.005\n");
 		printf("weekend 100 0.005 2\n");
 
 		MPI_Finalize();
 		return 1;
+	}
+
+	if (size > mag - 2) {
+		printf("Size (%d) exceeds writable matrix rows, mag-2 (%d). Exiting.\n",
+				size, mag - 2);
+
+		MPI_Finalize();
+		return 0;
 	}
 
 	if (rank == 0) {
