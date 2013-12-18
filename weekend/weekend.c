@@ -783,8 +783,12 @@ int main(int argc, char **argv)
 				MPI_Finalize();
 				return EXIT_FAILURE;
 			}
-			if (cacheSize > size || cacheSize < 2) {
-				printf("Boundary error on argument 0 [int 2~procs]; saw %d\n", cacheSize);
+			// cacheSize must be at least 2
+			// no benefit from being greater than the number of procs, so unless
+			// required to achieve minimum, cacheSize must not exceed size.
+			if ((size > 1 && cacheSize > size) || cacheSize < 2) {
+				printf("Boundary error on argument 0 [int 2~procs]; saw %d\n",
+						cacheSize);
 
 				MPI_Finalize();
 				return EXIT_FAILURE;
