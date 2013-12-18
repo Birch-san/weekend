@@ -15,6 +15,9 @@
  */
 //#define verbose
 
+// omit the print if you are doing performance tests or want small logs
+//#define printfinalresult
+
 // use floats or doubles
 #define VALCHOICE 0
 #if VALCHOICE == 0
@@ -585,6 +588,8 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 	/*==============================================================*/
 	// Give winning matrix to rank 0 to print
 	/*==============================================================*/
+	// even if we won't print result, still ought to time, compute receipt of it
+
 	// find destMatrix used for the winning iteration
 	int destMatrixMod = (winningIterationMod + 1) % matrixCount;
 	// rank 0 receives matrix portions
@@ -602,9 +607,11 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 			rank0Rows++;
 		}
 
+#ifdef printfinalresult
 		// print as 1D matrix indexed from first value
 		// (just to treat it the same way as we'll treat proceeding messages)
 		print1DMatrix(dest[0], myReadColumns, rank0Rows);
+#endif
 
 		// recycle my own matrix, since big enough, and no longer needed
 		// big enough because rank 0 necessarily takes a remainder row if needed
@@ -641,8 +648,10 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 			MPI_Recv(recvMatrixBuff, matrixBuffSize, MPI_VALTYPE,
 					p, (int)MATRIX_DATA, MPI_COMM_WORLD, &rowReceiptStatus);
 
+#ifdef printfinalresult
 			// gaplessly, print that matrix portion next to the existing prints
 			print1DMatrix(recvMatrixBuff, myReadColumns, currentProcOwnedRows);
+#endif
 		}
 	} else {
 		// ranks above 0 send matrix portions
