@@ -13,13 +13,13 @@
  * helps with debug
  * intended for separate xterms
  */
-//#define verbose
+#define verbose
 
 // omit the print if you are doing performance tests or want small logs
-//#define printfinalresult
+#define printfinalresult
 
-// use floats or doubles
-#define VALCHOICE 0
+// whether to use floats (0) or doubles (1)
+#define VALCHOICE 1
 #if VALCHOICE == 0
 #define VALTYPE float
 #define MPI_VALTYPE MPI_FLOAT
@@ -411,6 +411,11 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 		/*==========================================================*/
 		// Send rows to neighbours
 		/*==========================================================*/
+		/* Strictly speaking, 'first row' could have been sent a long time ago
+		 * (as soon as we calculated it). This could reduce the chance of
+		 * waiting for a message. But it would make the code much harder to
+		 * read, and the output would become more confusing.
+		 */
 
 		// if you have a 'previous rank', exchange the edge row you share
 		if (rank > 0) {
@@ -766,7 +771,7 @@ int main(int argc, char **argv)
 			MPI_Finalize();
 			return EXIT_FAILURE;
 		}
-		if (prec>0.1lf || prec <0.00001lf) {
+		if (prec>0.1 || prec <0.00001) {
 			printf("Boundary error arg 2 [%s 0.00001~0.1]; saw %lf\n",
 					type, prec);
 
