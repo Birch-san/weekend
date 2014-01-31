@@ -19,7 +19,7 @@
 #define printfinalresult
 
 // whether to use floats (0) or doubles (1)
-#define VALCHOICE 1
+#define VALCHOICE 0
 #if VALCHOICE == 0
 #define VALTYPE float
 #define MPI_VALTYPE MPI_FLOAT
@@ -41,6 +41,9 @@
 #include <math.h>
 #include <mpi.h>
 
+/* Typesafe max(), min() macros as per GCC docs:
+ * http://gcc.gnu.org/onlinedocs/gcc-3.4.6/gcc/Typeof.html#Typeof
+ */
 #define max(a,b) \
    ({ __typeof__ (a) _a = (a); \
        __typeof__ (b) _b = (b); \
@@ -183,7 +186,8 @@ void printRow(VALTYPE* row, int columns) {
  * Iteratively relaxes grid of numbers. Thread state & identity is tied to
  * a struct of arguments.
  */
-signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrixCount) {
+signed int relaxGrid(int mag, VALTYPE precision,
+		int procs, int rank, int matrixCount) {
 	/*==============================================================*/
 	// Calculate row allocations for this proc
 	/*==============================================================*/
@@ -477,8 +481,8 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 
 			// receive our bottom read row, from next rank.
 			// blocking; can't start next iteration without this information.
-			MPI_Recv(recvEndRowBuff,rowBuffSize,MPI_VALTYPE,
-						   rank + 1,(int)ROW_DATA,MPI_COMM_WORLD,&rowReceiptStatus);
+			MPI_Recv(recvEndRowBuff,rowBuffSize,MPI_VALTYPE, rank + 1,
+					(int)ROW_DATA, MPI_COMM_WORLD, &rowReceiptStatus);
 		}
 
 		// work we could do in the meantime has now been done; revisit this call
@@ -527,7 +531,8 @@ signed int relaxGrid(int mag, VALTYPE precision, int procs, int rank, int matrix
 				int currentMatrix = (oldest+i) % matrixCount;
 #ifdef verbose
 				printf("Checking iteration (mod): %d\n", i);
-				printf("my relax on that iteration was: %d\n", progressArray[currentMatrix]);
+				printf("my relax on that iteration was: %d\n",
+						progressArray[currentMatrix]);
 #endif
 
 #ifdef verbose
